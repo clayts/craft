@@ -16,6 +16,7 @@ mod imp {
 
     use super::editor;
     use crate::editor::Editor;
+    use crate::lsp;
 
     #[derive(Default)]
     pub struct Window {
@@ -27,6 +28,7 @@ mod imp {
         pub(super) heading: adw::WindowTitle,
         pub(super) stack: gtk::Stack,
         pub(super) tabs: adw::TabView,
+        pub(super) servers: lsp::Servers,
     }
 
     #[glib::object_subclass]
@@ -40,15 +42,16 @@ mod imp {
             klass.install_action("win.save", None, |win, _, _| win.save());
             klass.install_action("win.close-tab", None, |win, _, _| win.close_tab());
             klass.install_action("win.toggle-sidebar", None, |win, _, _| win.toggle_sidebar());
+            klass.install_action("win.go-to-definition", None, |win, _, _| {
+                win.go_to_definition();
+            });
             let ctrl = gdk::ModifierType::CONTROL_MASK;
+            let none = gdk::ModifierType::empty();
             klass.add_binding_action(gdk::Key::o, ctrl, "win.open-folder");
             klass.add_binding_action(gdk::Key::s, ctrl, "win.save");
             klass.add_binding_action(gdk::Key::w, ctrl, "win.close-tab");
-            klass.add_binding_action(
-                gdk::Key::F9,
-                gdk::ModifierType::empty(),
-                "win.toggle-sidebar",
-            );
+            klass.add_binding_action(gdk::Key::F9, none, "win.toggle-sidebar");
+            klass.add_binding_action(gdk::Key::F12, none, "win.go-to-definition");
         }
     }
 
@@ -138,6 +141,10 @@ mod imp {
             ));
             obj.update_state();
         }
+
+        fn dispose(&self) {
+            self.servers.shutdown();
+        }
     }
 
     impl WidgetImpl for Window {}
@@ -207,21 +214,30 @@ impl Window {
         let win = self.downgrade();
         glib::spawn_future_local(async move {
             for file in files {
-                match win.upgrade() {
-                    Some(win) if win.select(&file) => continue,
-                    Some(_) => {}
-                    None => return,
-                }
-                let result = Editor::open(file.clone()).await;
-                let Some(win) = win.upgrade() else { return };
-                match result {
-                    // The same file may have been opened while this one was read.
-                    Ok(editor) if !win.select(&file) => win.add(&editor),
-                    Ok(_) => {}
-                    Err(err) => win.report("open", &file, &err),
-                }
+                Self::open(&win, file).await;
             }
         });
+    }
+
+    /// Selects the tab editing `file`, reading the file into a new tab first
+    /// if needed.
+    async fn open(win: &glib::WeakRef<Self>, file: gio::File) -> Option<Editor> {
+        if let Some(editor) = win.upgrade()?.select(&file) {
+            return Some(editor);
+        }
+        let result = Editor::open(file.clone()).await;
+        let win = win.upgrade()?;
+        match result {
+            // The same file may have been opened while this one was read.
+            Ok(editor) => Some(win.select(&file).unwrap_or_else(|| {
+                win.add(&editor);
+                editor
+            })),
+            Err(err) => {
+                win.report("open", &file, &err);
+                None
+            }
+        }
     }
 
     fn add(&self, editor: &Editor) {
@@ -245,17 +261,25 @@ impl Window {
         page.set_tooltip(&glib::markup_escape_text(&editor.file().parse_name()));
         tabs.set_selected_page(&page);
         editor.grab_focus();
+        // Without a project, a file's folder serves as its server's root.
+        if let Some(root) = self.project().or_else(|| editor.file().parent())
+            && let Err(err) = self.imp().servers.attach(editor, &root)
+        {
+            self.toast(&err.to_string());
+        }
     }
 
     /// Selects and focuses the tab editing `file`, if there is one.
-    fn select(&self, file: &gio::File) -> bool {
+    fn select(&self, file: &gio::File) -> Option<Editor> {
         let tabs = &self.imp().tabs;
-        let Some(editor) = self.editors().find(|editor| editor.file().equal(file)) else {
-            return false;
-        };
+        let editor = self.editors().find(|editor| editor.file().equal(file))?;
         tabs.set_selected_page(&tabs.page(&editor));
         editor.grab_focus();
-        true
+        Some(editor)
+    }
+
+    fn current_editor(&self) -> Option<Editor> {
+        self.imp().tabs.selected_page().map(|page| editor(&page))
     }
 
     fn editors(&self) -> impl Iterator<Item = Editor> + '_ {
@@ -284,7 +308,7 @@ impl Window {
     }
 
     fn save(&self) {
-        let Some(editor) = self.imp().tabs.selected_page().map(|page| editor(&page)) else {
+        let Some(editor) = self.current_editor() else {
             return;
         };
         let win = self.downgrade();
@@ -293,6 +317,38 @@ impl Window {
                 && let Some(win) = win.upgrade()
             {
                 win.report("save", &editor.file(), &err);
+            }
+        });
+    }
+
+    /// Shows where what is at the cursor is defined, as the language server
+    /// says.
+    fn go_to_definition(&self) {
+        let Some(editor) = self.current_editor() else {
+            return;
+        };
+        let buffer = editor.buffer();
+        let cursor = buffer.iter_at_mark(&buffer.get_insert());
+        let request = editor
+            .document()
+            .map(|document| (document.definition(&cursor), document.encoding()));
+        let win = self.downgrade();
+        glib::spawn_future_local(async move {
+            let found = match request {
+                Some((definition, encoding)) => definition.await.map(|found| (found, encoding)),
+                None => None,
+            };
+            match found {
+                Some(((file, position), encoding)) => {
+                    if let Some(editor) = Self::open(&win, file).await {
+                        editor.goto(position, encoding);
+                    }
+                }
+                None => {
+                    if let Some(win) = win.upgrade() {
+                        win.toast("No definition found");
+                    }
+                }
             }
         });
     }
@@ -349,6 +405,7 @@ impl Window {
         let has_project = imp.project.borrow().is_some();
         self.action_set_enabled("win.save", has_tabs);
         self.action_set_enabled("win.close-tab", has_tabs);
+        self.action_set_enabled("win.go-to-definition", has_tabs);
         self.action_set_enabled("win.toggle-sidebar", has_project);
         imp.stack
             .set_visible_child_name(if has_tabs || has_project {

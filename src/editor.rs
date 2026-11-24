@@ -1,6 +1,7 @@
 //! An open document: a file and the source view editing it.
 
 use std::borrow::Cow;
+use std::rc::Rc;
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
@@ -8,6 +9,7 @@ use gtk::{gio, glib};
 use sourceview::prelude::*;
 
 use crate::display_name;
+use crate::lsp::{Document, Encoding};
 
 /// How many leading bytes of a file are used to guess its content type.
 const SNIFF_LEN: usize = 8192;
@@ -15,6 +17,7 @@ const SNIFF_LEN: usize = 8192;
 mod imp {
     use std::cell::{Cell, OnceCell, RefCell};
     use std::marker::PhantomData;
+    use std::rc::Rc;
 
     use adw::prelude::*;
     use adw::subclass::prelude::*;
@@ -22,6 +25,7 @@ mod imp {
     use sourceview::prelude::*;
 
     use crate::display_name;
+    use crate::lsp::Document;
 
     #[derive(Default, glib::Properties)]
     #[properties(wrapper_type = super::Editor)]
@@ -43,6 +47,8 @@ mod imp {
         /// holds what it wrote.
         pub(super) generation: Cell<u64>,
         pub(super) saving: Cell<bool>,
+        /// The file as its language server has it, if one is running.
+        pub(super) document: RefCell<Option<Rc<Document>>>,
     }
 
     #[glib::object_subclass]
@@ -93,6 +99,11 @@ mod imp {
             view.set_smart_home_end(sourceview::SmartHomeEndType::Before);
             view.set_tab_width(4);
             obj.set_child(Some(&gtk::ScrolledWindow::builder().child(view).build()));
+        }
+
+        fn dispose(&self) {
+            // While the view is intact for the document to detach from it.
+            self.document.take();
         }
     }
 
@@ -180,6 +191,38 @@ impl Editor {
         self.imp().buffer.is_modified()
     }
 
+    pub fn buffer(&self) -> sourceview::Buffer {
+        self.imp().buffer.clone()
+    }
+
+    pub fn view(&self) -> sourceview::View {
+        self.imp().view.clone()
+    }
+
+    /// The identifier of the file's `GtkSourceView` language.
+    pub fn language(&self) -> Option<glib::GString> {
+        self.imp().buffer.language().map(|language| language.id())
+    }
+
+    pub fn document(&self) -> Option<Rc<Document>> {
+        self.imp().document.borrow().clone()
+    }
+
+    pub fn set_document(&self, document: Option<Rc<Document>>) {
+        self.imp().document.replace(document);
+    }
+
+    /// Moves the cursor to `position`, which the language server gave in
+    /// `encoding`, and scrolls it into view.
+    pub fn goto(&self, position: lsp_types::Position, encoding: Encoding) {
+        let imp = self.imp();
+        imp.buffer
+            .place_cursor(&encoding.iter_at(&imp.buffer, position));
+        imp.view
+            .scroll_to_mark(&imp.buffer.get_insert(), 0.0, true, 0.0, 0.3);
+        self.grab_focus();
+    }
+
     /// Writes the buffer to the file in the file's line ending style. If
     /// another program has changed the file since it was read, asks before
     /// overwriting; declining fails with [`gio::IOErrorEnum::Cancelled`].
@@ -191,6 +234,11 @@ impl Editor {
         }
         let result = self.write().await;
         imp.saving.set(false);
+        if result.is_ok()
+            && let Some(document) = self.document()
+        {
+            document.saved();
+        }
         result
     }
 

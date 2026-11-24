@@ -2,6 +2,7 @@
 
 mod editor;
 mod file_tree;
+mod lsp;
 mod window;
 
 use adw::prelude::*;

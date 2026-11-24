@@ -5,7 +5,8 @@ GtkSourceView.
 
 Craft has a project file tree, tabs, find and replace, and language server
 support, and nothing else: no settings, git, AI, plugins, terminal or run
-commands. Find and replace and language server support are not built yet.
+commands. Find and replace, completion, semantic highlighting and symbol
+search are not built yet.
 
 ## Building
 
@@ -57,9 +58,37 @@ instance, so running it again opens into the windows already on screen.
 | Ctrl+W                               | Close tab        |
 | Ctrl+Q                               | Quit             |
 | F9                                   | Toggle sidebar   |
+| F12                                  | Go to definition |
 | Ctrl+Tab, Ctrl+Page Up/Down          | Switch tab       |
 | Alt+1…9                              | Go to tab        |
 | Ctrl+Shift+Page Up/Down              | Move tab         |
+
+## Language servers
+
+Craft starts a language server for each language and project you open files
+in, using the first of these it finds on your `PATH`:
+
+| Language               | Servers                                                  |
+| ---------------------- | -------------------------------------------------------- |
+| Rust                   | `rust-analyzer`                                          |
+| C, C++, Objective-C    | `clangd`                                                 |
+| Go                     | `gopls`                                                  |
+| Python                 | `basedpyright-langserver`, `pyright-langserver`, `pylsp` |
+| JavaScript, TypeScript | `typescript-language-server`                             |
+| Nix                    | `nixd`, `nil`                                            |
+| Shell                  | `bash-language-server`                                   |
+| Zig                    | `zls`                                                    |
+| Lua                    | `lua-language-server`                                    |
+| TOML                   | `taplo`                                                  |
+| JSON                   | `vscode-json-language-server`                            |
+| YAML                   | `yaml-language-server`                                   |
+| HTML                   | `vscode-html-language-server`                            |
+| CSS                    | `vscode-css-language-server`                             |
+
+Errors, warnings and notes are underlined. Hovering shows their messages and
+the server's description of what is under the pointer. A server that crashes
+after running for at least 30 seconds restarts by itself; one that crashes
+sooner restarts when you next open a file in its language.
 
 ## Behaviour
 
@@ -78,11 +107,12 @@ instance, so running it again opens into the windows already on screen.
 
 ## Source
 
-| File               | Contents                                               |
-| ------------------ | ------------------------------------------------------ |
-| `src/main.rs`      | Application: startup, and routing folders and files    |
-| `src/window.rs`    | Project window: layout, tabs, actions, close prompts   |
-| `src/editor.rs`    | One open file: source view, loading and saving         |
-| `src/file_tree.rs` | Sidebar tree: loaded lazily, updated live              |
-| `package.nix`      | Nix package                                            |
-| `flake.nix`        | Nix flake: package, development shell and formatter    |
+| File               | Contents                                             |
+| ------------------ | ---------------------------------------------------- |
+| `src/main.rs`      | Application: startup, and routing folders and files  |
+| `src/window.rs`    | Project window: layout, tabs, actions, close prompts |
+| `src/editor.rs`    | One open file: source view, loading and saving       |
+| `src/file_tree.rs` | Sidebar tree: loaded lazily, updated live            |
+| `src/lsp/`         | Language servers: processes, protocol, files, hover  |
+| `package.nix`      | Nix package                                          |
+| `flake.nix`        | Nix flake: package, development shell and formatter  |
