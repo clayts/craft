@@ -24,6 +24,19 @@ Then build and install to `~/.cargo/bin`:
 cargo install --path .
 ```
 
+### With Nix
+
+The flake builds against nixos-unstable:
+
+```sh
+nix run        # build and run Craft
+nix build      # build it into ./result
+nix develop    # a shell with Rust, the libraries, Clippy, rustfmt and rust-analyzer
+```
+
+Inside `nix develop`, `cargo build` and `cargo run` work as usual. `nix fmt`
+formats the Nix files.
+
 ## Usage
 
 ```sh
@@ -71,3 +84,5 @@ instance, so running it again opens into the windows already on screen.
 | `src/window.rs`    | Project window: layout, tabs, actions, close prompts   |
 | `src/editor.rs`    | One open file: source view, loading and saving         |
 | `src/file_tree.rs` | Sidebar tree: loaded lazily, updated live              |
+| `package.nix`      | Nix package                                            |
+| `flake.nix`        | Nix flake: package, development shell and formatter    |
