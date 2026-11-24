@@ -66,7 +66,7 @@ instance, so running it again opens into the windows already on screen.
 ## Language servers
 
 Craft starts a language server for each language and project you open files
-in, using the first of these it finds on your `PATH`:
+in, using the first of these it finds on the project's `PATH`:
 
 | Language               | Servers                                                  |
 | ---------------------- | -------------------------------------------------------- |
@@ -84,6 +84,11 @@ in, using the first of these it finds on your `PATH`:
 | YAML                   | `yaml-language-server`                                   |
 | HTML                   | `vscode-html-language-server`                            |
 | CSS                    | `vscode-css-language-server`                             |
+
+The project's `PATH` is Craft's own, changed by the project's direnv
+environment if it has an `.envrc`, so servers can come from its development
+shell. If the `.envrc` is blocked, Craft says so: run `direnv allow`, then open
+a file to start its server.
 
 Errors, warnings and notes are underlined. Hovering shows their messages and
 the server's description of what is under the pointer. A server that crashes
@@ -107,12 +112,12 @@ sooner restarts when you next open a file in its language.
 
 ## Source
 
-| File               | Contents                                             |
-| ------------------ | ---------------------------------------------------- |
-| `src/main.rs`      | Application: startup, and routing folders and files  |
-| `src/window.rs`    | Project window: layout, tabs, actions, close prompts |
-| `src/editor.rs`    | One open file: source view, loading and saving       |
-| `src/file_tree.rs` | Sidebar tree: loaded lazily, updated live            |
-| `src/lsp/`         | Language servers: processes, protocol, files, hover  |
-| `package.nix`      | Nix package                                          |
-| `flake.nix`        | Nix flake: package, development shell and formatter  |
+| File               | Contents                                                          |
+| ------------------ | ----------------------------------------------------------------- |
+| `src/main.rs`      | Application: startup, and routing folders and files               |
+| `src/window.rs`    | Project window: layout, tabs, actions, close prompts              |
+| `src/editor.rs`    | One open file: source view, loading and saving                    |
+| `src/file_tree.rs` | Sidebar tree: loaded lazily, updated live                         |
+| `src/lsp/`         | Language servers: environments, processes, protocol, files, hover |
+| `package.nix`      | Nix package                                                       |
+| `flake.nix`        | Nix flake: package, development shell and formatter               |

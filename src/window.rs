@@ -8,7 +8,7 @@ use crate::editor::Editor;
 use crate::{display_name, file_tree};
 
 mod imp {
-    use std::cell::RefCell;
+    use std::cell::{OnceCell, RefCell};
 
     use adw::prelude::*;
     use adw::subclass::prelude::*;
@@ -28,7 +28,7 @@ mod imp {
         pub(super) heading: adw::WindowTitle,
         pub(super) stack: gtk::Stack,
         pub(super) tabs: adw::TabView,
-        pub(super) servers: lsp::Servers,
+        pub(super) servers: OnceCell<lsp::Servers>,
     }
 
     #[glib::object_subclass]
@@ -61,6 +61,13 @@ mod imp {
             let obj = self.obj();
             obj.set_title(Some("Craft"));
             obj.set_default_size(1000, 700);
+            self.servers.get_or_init(|| {
+                lsp::Servers::new(glib::clone!(
+                    #[weak]
+                    obj,
+                    move |message: &str| obj.toast(message)
+                ))
+            });
 
             self.sidebar.set_hscrollbar_policy(gtk::PolicyType::Never);
             let sidebar = adw::ToolbarView::new();
@@ -143,7 +150,9 @@ mod imp {
         }
 
         fn dispose(&self) {
-            self.servers.shutdown();
+            if let Some(servers) = self.servers.get() {
+                servers.shutdown();
+            }
         }
     }
 
@@ -262,10 +271,9 @@ impl Window {
         tabs.set_selected_page(&page);
         editor.grab_focus();
         // Without a project, a file's folder serves as its server's root.
-        if let Some(root) = self.project().or_else(|| editor.file().parent())
-            && let Err(err) = self.imp().servers.attach(editor, &root)
-        {
-            self.toast(&err.to_string());
+        if let Some(root) = self.project().or_else(|| editor.file().parent()) {
+            let servers = self.imp().servers.get().expect("windows set up servers");
+            servers.attach(editor, &root);
         }
     }
 

@@ -1,42 +1,49 @@
-//! Language server support: a window runs a server per language and project
-//! root, found on `PATH`, and connects each open file to its server.
+//! Language server support: a window runs a server per language and project,
+//! found on the project's `PATH`, and connects each open file to its server.
 
 mod client;
 mod document;
+mod environment;
 mod hover;
 mod position;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io;
 use std::rc::Rc;
 
+use futures_util::FutureExt;
+use futures_util::future::{LocalBoxFuture, Shared};
 use gtk::prelude::*;
 use gtk::{gio, glib};
 
 use client::Client;
 pub use document::Document;
+use environment::Environment;
 pub use position::Encoding;
 
 use crate::editor::Editor;
 
-/// A language server: its command line, and the `GtkSourceView` languages it
-/// serves with the LSP identifier of each.
+/// Tells the user of a problem.
+type Report = Rc<dyn Fn(&str)>;
+
+/// A project's environment, loaded once for all of its servers.
+type SharedEnvironment = Shared<LocalBoxFuture<'static, Rc<Environment>>>;
+
+/// A language server: the command lines to try, the first found on the
+/// project's `PATH` winning, and the `GtkSourceView` languages it serves with
+/// the LSP identifier of each.
 struct Server {
-    command: &'static [&'static str],
+    commands: &'static [&'static [&'static str]],
     languages: &'static [(&'static str, &'static str)],
 }
 
-const PYTHON: &[(&str, &str)] = &[("python3", "python"), ("python", "python")];
-
-/// The servers to use, earlier ones first when several serve a language.
 const SERVERS: &[Server] = &[
     Server {
-        command: &["rust-analyzer"],
+        commands: &[&["rust-analyzer"]],
         languages: &[("rust", "rust")],
     },
     Server {
-        command: &["clangd"],
+        commands: &[&["clangd"]],
         languages: &[
             ("c", "c"),
             ("chdr", "c"),
@@ -46,23 +53,19 @@ const SERVERS: &[Server] = &[
         ],
     },
     Server {
-        command: &["gopls"],
+        commands: &[&["gopls"]],
         languages: &[("go", "go")],
     },
     Server {
-        command: &["basedpyright-langserver", "--stdio"],
-        languages: PYTHON,
+        commands: &[
+            &["basedpyright-langserver", "--stdio"],
+            &["pyright-langserver", "--stdio"],
+            &["pylsp"],
+        ],
+        languages: &[("python3", "python"), ("python", "python")],
     },
     Server {
-        command: &["pyright-langserver", "--stdio"],
-        languages: PYTHON,
-    },
-    Server {
-        command: &["pylsp"],
-        languages: PYTHON,
-    },
-    Server {
-        command: &["typescript-language-server", "--stdio"],
+        commands: &[&["typescript-language-server", "--stdio"]],
         languages: &[
             ("js", "javascript"),
             ("jsx", "javascriptreact"),
@@ -71,104 +74,141 @@ const SERVERS: &[Server] = &[
         ],
     },
     Server {
-        command: &["nixd"],
+        commands: &[&["nixd"], &["nil"]],
         languages: &[("nix", "nix")],
     },
     Server {
-        command: &["nil"],
-        languages: &[("nix", "nix")],
-    },
-    Server {
-        command: &["bash-language-server", "start"],
+        commands: &[&["bash-language-server", "start"]],
         languages: &[("sh", "shellscript")],
     },
     Server {
-        command: &["zls"],
+        commands: &[&["zls"]],
         languages: &[("zig", "zig")],
     },
     Server {
-        command: &["lua-language-server"],
+        commands: &[&["lua-language-server"]],
         languages: &[("lua", "lua")],
     },
     Server {
-        command: &["taplo", "lsp", "stdio"],
+        commands: &[&["taplo", "lsp", "stdio"]],
         languages: &[("toml", "toml")],
     },
     Server {
-        command: &["vscode-json-language-server", "--stdio"],
+        commands: &[&["vscode-json-language-server", "--stdio"]],
         languages: &[("json", "json")],
     },
     Server {
-        command: &["yaml-language-server", "--stdio"],
+        commands: &[&["yaml-language-server", "--stdio"]],
         languages: &[("yaml", "yaml")],
     },
     Server {
-        command: &["vscode-html-language-server", "--stdio"],
+        commands: &[&["vscode-html-language-server", "--stdio"]],
         languages: &[("html", "html")],
     },
     Server {
-        command: &["vscode-css-language-server", "--stdio"],
+        commands: &[&["vscode-css-language-server", "--stdio"]],
         languages: &[("css", "css")],
     },
 ];
 
-/// The first installed server for the `GtkSourceView` language `language`, by
-/// index, with the language's LSP identifier.
-fn find_server(language: &str) -> Option<(usize, &'static str)> {
+/// The server for the `GtkSourceView` language `language`, by index, with the
+/// language's LSP identifier.
+fn server_for(language: &str) -> Option<(usize, &'static str)> {
     SERVERS.iter().enumerate().find_map(|(index, server)| {
         let &(_, id) = server
             .languages
             .iter()
             .find(|&&(name, _)| name == language)?;
-        glib::find_program_in_path(server.command[0])?;
         Some((index, id))
     })
 }
 
 /// A window's language servers, by server and project root.
-#[derive(Default)]
 pub struct Servers {
     clients: RefCell<HashMap<(usize, glib::GString), Rc<Client>>>,
+    environments: RefCell<HashMap<glib::GString, SharedEnvironment>>,
+    report: Report,
 }
 
 impl Servers {
+    /// Servers that tell `report` of the problems they meet.
+    pub fn new(report: impl Fn(&str) + 'static) -> Self {
+        Self {
+            clients: RefCell::default(),
+            environments: RefCell::default(),
+            report: Rc::new(report),
+        }
+    }
+
     /// Connects `editor` to the server for its language, starting it for the
-    /// project at `root` if needed. Files in languages without an installed
-    /// server stay unconnected.
-    pub fn attach(&self, editor: &Editor, root: &gio::File) -> io::Result<()> {
-        let Some((index, language)) = editor.language().and_then(|name| find_server(&name)) else {
-            return Ok(());
+    /// project at `root` if needed.
+    pub fn attach(&self, editor: &Editor, root: &gio::File) {
+        let Some((index, language)) = editor.language().and_then(|name| server_for(&name)) else {
+            return;
         };
         let key = (index, root.uri());
-        let existing = self.clients.borrow().get(&key).cloned();
-        let client = match existing {
-            Some(client) if !client.is_stopped() => client,
-            stopped => {
-                let command = SERVERS[index].command;
-                let client = Client::start(command, root).map_err(|err| {
-                    io::Error::new(err.kind(), format!("Could not start {}: {err}", command[0]))
-                })?;
-                self.clients.borrow_mut().insert(key, Rc::clone(&client));
-                // The new server takes over the stopped one's files.
-                for document in stopped.iter().flat_map(|stopped| stopped.documents()) {
-                    if let Some(editor) = document.editor() {
-                        editor.set_document(Some(Document::new(
-                            &client,
-                            &editor,
-                            document.language(),
-                        )));
-                    }
-                }
-                client
+        let running = self
+            .clients
+            .borrow()
+            .get(&key)
+            .filter(|client| !client.is_stopped())
+            .cloned();
+        let client = if let Some(client) = running {
+            client
+        } else {
+            let server = &SERVERS[index];
+            let environment = self.environment(root);
+            // Once the environment is known, a missing server is too.
+            if environment
+                .peek()
+                .is_some_and(|environment| environment.find(server.commands).is_none())
+            {
+                return;
             }
+            let client = Client::start(server, root, environment, Rc::clone(&self.report));
+            let stopped = self.clients.borrow_mut().insert(key, Rc::clone(&client));
+            // The new server takes over the stopped one's files.
+            for document in stopped.iter().flat_map(|stopped| stopped.documents()) {
+                if let Some(editor) = document.editor() {
+                    let document = Document::new(&client, &editor, document.language());
+                    editor.set_document(Some(document));
+                }
+            }
+            client
         };
         editor.set_document(Some(Document::new(&client, editor, language)));
-        Ok(())
+    }
+
+    /// The environment of the project at `root`, loaded once, or again after
+    /// failing, in case the cause has been fixed.
+    fn environment(&self, root: &gio::File) -> SharedEnvironment {
+        let key = root.uri();
+        if let Some(environment) = self.environments.borrow().get(&key)
+            && !environment
+                .peek()
+                .is_some_and(|environment| environment.failed)
+        {
+            return environment.clone();
+        }
+        let (root, report) = (root.clone(), Rc::clone(&self.report));
+        let environment = async move {
+            Rc::new(Environment::load(&root).await.unwrap_or_else(|message| {
+                report(&message);
+                Environment::failed()
+            }))
+        }
+        .boxed_local()
+        .shared();
+        self.environments
+            .borrow_mut()
+            .insert(key, environment.clone());
+        environment
     }
 
     /// Shuts every server down, keeping the application running until they
     /// have exited.
     pub fn shutdown(&self) {
+        self.environments.take();
         let application = gio::Application::default();
         for client in self.clients.take().into_values() {
             let hold = application

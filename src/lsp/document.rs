@@ -15,10 +15,11 @@ use lsp_types::{
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, GotoDefinitionParams,
     GotoDefinitionResponse, HoverContents, HoverParams, HoverProviderCapability, MarkedString,
-    OneOf, PartialResultParams, Position, Range, TextDocumentContentChangeEvent,
-    TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
-    TextDocumentSyncSaveOptions, Uri, VersionedTextDocumentIdentifier, WorkDoneProgressParams,
+    OneOf, PartialResultParams, Position, Range, ServerCapabilities,
+    TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
+    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Uri, VersionedTextDocumentIdentifier,
+    WorkDoneProgressParams,
 };
 use sourceview::prelude::*;
 
@@ -50,7 +51,7 @@ pub struct Document {
 impl Document {
     /// Connects `editor`, whose file is in the LSP language `language`, to
     /// `client`.
-    pub fn new(client: &Rc<Client>, editor: &Editor, language: &'static str) -> Rc<Self> {
+    pub(super) fn new(client: &Rc<Client>, editor: &Editor, language: &'static str) -> Rc<Self> {
         let buffer = editor.buffer();
         let view = editor.view();
         let document = Rc::new_cyclic(|this: &Weak<Self>| {
@@ -95,11 +96,11 @@ impl Document {
         document
     }
 
-    pub fn editor(&self) -> Option<Editor> {
+    pub(super) fn editor(&self) -> Option<Editor> {
         self.editor.upgrade()
     }
 
-    pub fn language(&self) -> &'static str {
+    pub(super) fn language(&self) -> &'static str {
         self.language
     }
 
@@ -108,7 +109,7 @@ impl Document {
     }
 
     /// Gives the server the document, as it now is.
-    pub fn open(&self) {
+    pub(super) fn open(&self) {
         self.opened.set(true);
         self.version.set(0);
         self.client
@@ -123,7 +124,7 @@ impl Document {
     }
 
     /// Forgets the server's copy, which it lost by stopping.
-    pub fn closed(&self) {
+    pub(super) fn closed(&self) {
         self.opened.set(false);
         self.clear_diagnostics();
     }
@@ -207,7 +208,7 @@ impl Document {
 
     /// Underlines `diagnostics`, replacing the previous ones, unless they are
     /// for an older version of the text.
-    pub fn set_diagnostics(&self, version: Option<i32>, diagnostics: Vec<Diagnostic>) {
+    pub(super) fn set_diagnostics(&self, version: Option<i32>, diagnostics: Vec<Diagnostic>) {
         if !self.opened.get() || version.is_some_and(|version| version != self.version.get()) {
             return;
         }
@@ -250,7 +251,7 @@ impl Document {
     }
 
     /// The messages of the diagnostics at `iter`.
-    pub fn diagnostics_at(&self, iter: &gtk::TextIter) -> Vec<String> {
+    pub(super) fn diagnostics_at(&self, iter: &gtk::TextIter) -> Vec<String> {
         self.diagnostics
             .borrow()
             .iter()
@@ -260,15 +261,16 @@ impl Document {
     }
 
     /// The server's description of what is at `iter`, as plain text.
-    pub fn hover(&self, iter: &gtk::TextIter) -> impl Future<Output = Option<String>> + use<> {
-        let supported = self.client.capabilities().is_some_and(|capabilities| {
+    pub(super) fn hover(
+        &self,
+        iter: &gtk::TextIter,
+    ) -> impl Future<Output = Option<String>> + use<> {
+        let request = self.position_request(iter, |capabilities| {
             capabilities
                 .hover_provider
                 .as_ref()
                 .is_some_and(|provider| *provider != HoverProviderCapability::Simple(false))
         });
-        let request = (supported && self.opened.get())
-            .then(|| (Rc::clone(&self.client), self.position_params(iter)));
         async move {
             let (client, params) = request?;
             let hover = client
@@ -297,14 +299,12 @@ impl Document {
         &self,
         iter: &gtk::TextIter,
     ) -> impl Future<Output = Option<(gio::File, Position)>> + use<> {
-        let supported = self.client.capabilities().is_some_and(|capabilities| {
+        let request = self.position_request(iter, |capabilities| {
             capabilities
                 .definition_provider
                 .as_ref()
                 .is_some_and(|provider| *provider != OneOf::Left(false))
         });
-        let request = (supported && self.opened.get())
-            .then(|| (Rc::clone(&self.client), self.position_params(iter)));
         async move {
             let (client, params) = request?;
             let response = client
@@ -330,11 +330,27 @@ impl Document {
         }
     }
 
-    fn position_params(&self, iter: &gtk::TextIter) -> TextDocumentPositionParams {
-        TextDocumentPositionParams::new(
-            TextDocumentIdentifier::new(self.uri.clone()),
-            self.client.encoding().position(iter),
-        )
+    /// The client and the position of `iter`, for a request that the server
+    /// takes if `takes` says so of its capabilities. The position is read now,
+    /// as the buffer may change before the request is sent.
+    fn position_request(
+        &self,
+        iter: &gtk::TextIter,
+        takes: impl FnOnce(&ServerCapabilities) -> bool,
+    ) -> Option<(Rc<Client>, TextDocumentPositionParams)> {
+        let ready = self.opened.get()
+            && self
+                .client
+                .capabilities()
+                .is_some_and(|capabilities| takes(&capabilities));
+        ready.then(|| {
+            let position = self.client.encoding().position(iter);
+            let document = TextDocumentIdentifier::new(self.uri.clone());
+            (
+                Rc::clone(&self.client),
+                TextDocumentPositionParams::new(document, position),
+            )
+        })
     }
 }
 

@@ -1,17 +1,21 @@
 //! A language server process and the JSON-RPC connection to it.
 //!
 //! Blocking pipe I/O runs on a reader and a writer thread per server. Messages
-//! reach the main thread through channels, where they are parsed into their
+//! reach the main thread through a channel, where they are parsed into their
 //! types and dispatched, so the interface never waits on a server.
 
 use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::rc::{Rc, Weak};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use futures_channel::{mpsc as async_mpsc, oneshot};
+use futures_util::StreamExt;
 use gtk::prelude::*;
 use gtk::{gio, glib};
 use lsp_types::notification::{self, Notification};
@@ -27,8 +31,9 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-use super::Encoding;
 use super::document::Document;
+use super::environment::Environment;
+use super::{Encoding, Report, Server, SharedEnvironment};
 use crate::display_name;
 
 /// How long a server must have run for a crash to be worth a restart, rather
@@ -38,13 +43,22 @@ const MIN_UPTIME_FOR_RESTART: Duration = Duration::from_secs(30);
 /// How long a server gets to shut down before it is killed.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
-pub struct Client {
-    command: &'static [&'static str],
+pub(super) struct Client {
+    server: &'static Server,
     root: gio::File,
+    report: Report,
+    /// The server's command line and environment, once found.
+    launch: RefCell<Option<Launch>>,
     state: RefCell<State>,
     connection: RefCell<Option<Connection>>,
     /// Open documents by URI, which the server's notifications refer to.
     documents: RefCell<HashMap<String, Weak<Document>>>,
+}
+
+struct Launch {
+    program: PathBuf,
+    command: &'static [&'static str],
+    environment: Rc<Environment>,
 }
 
 enum State {
@@ -56,8 +70,8 @@ enum State {
 
 struct Connection {
     child: Child,
-    outgoing: async_channel::Sender<Vec<u8>>,
-    pending: HashMap<i32, async_channel::Sender<Response>>,
+    outgoing: mpsc::Sender<Vec<u8>>,
+    pending: HashMap<i32, oneshot::Sender<Response>>,
     next_id: i32,
     started: Instant,
 }
@@ -73,7 +87,7 @@ impl Drop for Connection {
 type Response = Result<Box<RawValue>, ResponseError>;
 
 #[derive(Debug)]
-pub enum Error {
+pub(super) enum Error {
     Disconnected,
     Server(ResponseError),
     Invalid(serde_json::Error),
@@ -90,7 +104,7 @@ impl fmt::Display for Error {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct ResponseError {
+pub(super) struct ResponseError {
     code: i64,
     message: String,
 }
@@ -125,29 +139,58 @@ enum Body<T> {
 }
 
 impl Client {
-    /// Starts the server `command` for the project at `root`.
-    pub fn start(command: &'static [&'static str], root: &gio::File) -> io::Result<Rc<Self>> {
+    /// Starts `server` for the project at `root`, in the project's
+    /// `environment` once it is loaded, telling `report` of failures.
+    pub(super) fn start(
+        server: &'static Server,
+        root: &gio::File,
+        environment: SharedEnvironment,
+        report: Report,
+    ) -> Rc<Self> {
         let client = Rc::new(Self {
-            command,
+            server,
             root: root.clone(),
+            report,
+            launch: RefCell::default(),
             state: RefCell::new(State::Starting),
             connection: RefCell::default(),
             documents: RefCell::default(),
         });
-        client.connect()?;
-        Ok(client)
+        glib::spawn_future_local(Rc::clone(&client).launch(environment));
+        client
     }
 
-    pub fn name(&self) -> &'static str {
-        self.command[0]
+    async fn launch(self: Rc<Self>, environment: SharedEnvironment) {
+        let environment = environment.await;
+        // Shut down while the environment loaded.
+        if !matches!(*self.state.borrow(), State::Starting) {
+            return;
+        }
+        let Some((program, command)) = environment.find(self.server.commands) else {
+            self.state.replace(State::Stopped);
+            return;
+        };
+        self.launch.replace(Some(Launch {
+            program,
+            command,
+            environment,
+        }));
+        self.connect();
     }
 
-    pub fn is_stopped(&self) -> bool {
+    fn name(&self) -> &'static str {
+        self.launch
+            .borrow()
+            .as_ref()
+            .map_or(self.server.commands[0][0], |launch| launch.command[0])
+    }
+
+    pub(super) fn is_stopped(&self) -> bool {
         matches!(*self.state.borrow(), State::Stopped)
     }
 
     /// The server's capabilities, while it is running.
-    pub fn capabilities(&self) -> Option<Ref<'_, ServerCapabilities>> {
+    pub(super) fn capabilities(&self) -> Option<Ref<'_, ServerCapabilities>> {
         Ref::filter_map(self.state.borrow(), |state| match state {
             State::Running(capabilities) => Some(&**capabilities),
             _ => None,
@@ -155,13 +198,13 @@ impl Client {
         .ok()
     }
 
-    pub fn encoding(&self) -> Encoding {
-        self.capabilities().map_or(Encoding::Utf16, |c| {
-            Encoding::new(c.position_encoding.as_ref())
+    pub(super) fn encoding(&self) -> Encoding {
+        self.capabilities().map_or(Encoding::Utf16, |capabilities| {
+            Encoding::new(capabilities.position_encoding.as_ref())
         })
     }
 
-    pub fn documents(&self) -> Vec<Rc<Document>> {
+    pub(super) fn documents(&self) -> Vec<Rc<Document>> {
         self.documents
             .borrow()
             .values()
@@ -170,7 +213,7 @@ impl Client {
     }
 
     /// Tracks `document`, which is opened on the server once it is running.
-    pub fn add(&self, uri: &Uri, document: &Rc<Document>) {
+    pub(super) fn add(&self, uri: &Uri, document: &Rc<Document>) {
         self.documents
             .borrow_mut()
             .insert(uri.as_str().to_owned(), Rc::downgrade(document));
@@ -179,25 +222,42 @@ impl Client {
         }
     }
 
-    pub fn remove(&self, uri: &Uri) {
+    pub(super) fn remove(&self, uri: &Uri) {
         self.documents.borrow_mut().remove(uri.as_str());
     }
 
-    fn connect(self: &Rc<Self>) -> io::Result<()> {
-        let mut command = Command::new(self.name());
-        command
-            .args(&self.command[1..])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+    /// Starts the server process and initializes it, or reports why not.
+    fn connect(self: &Rc<Self>) {
+        if let Err(err) = self.spawn() {
+            (self.report)(&format!("Could not start {}: {err}", self.name()));
+            self.state.replace(State::Stopped);
+            return;
+        }
+        self.state.replace(State::Starting);
+        glib::spawn_future_local(Rc::clone(self).initialize());
+    }
+
+    fn spawn(self: &Rc<Self>) -> io::Result<()> {
+        let mut command = {
+            let launch = self.launch.borrow();
+            let launch = launch.as_ref().expect("servers launch before connecting");
+            let mut command = Command::new(&launch.program);
+            command
+                .args(&launch.command[1..])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit());
+            launch.environment.apply(&mut command);
+            command
+        };
         if let Some(path) = self.root.path() {
             command.current_dir(path);
         }
         let mut child = command.spawn()?;
         let stdin = child.stdin.take().expect("stdin is piped");
         let stdout = child.stdout.take().expect("stdout is piped");
-        let (outgoing, outbox) = async_channel::unbounded();
-        let (inbox, incoming) = async_channel::unbounded();
+        let (outgoing, outbox) = mpsc::channel();
+        let (inbox, mut incoming) = async_mpsc::unbounded();
         // Owning the process, this kills it if a thread fails to start, which
         // ends the other.
         let connection = Connection {
@@ -208,14 +268,13 @@ impl Client {
             started: Instant::now(),
         };
         let thread = |role| std::thread::Builder::new().name(format!("{} {role}", self.name()));
-        thread("writer").spawn(move || write_messages(stdin, &outbox))?;
+        thread("writer").spawn(move || write_messages(stdin, outbox))?;
         thread("reader").spawn(move || read_messages(stdout, &inbox))?;
         self.connection.replace(Some(connection));
-        self.state.replace(State::Starting);
 
         let client = Rc::downgrade(self);
         glib::spawn_future_local(async move {
-            while let Ok(message) = incoming.recv().await {
+            while let Some(message) = incoming.next().await {
                 let Some(client) = client.upgrade() else {
                     return;
                 };
@@ -225,7 +284,6 @@ impl Client {
                 client.disconnected();
             }
         });
-        glib::spawn_future_local(Rc::clone(self).initialize());
         Ok(())
     }
 
@@ -244,7 +302,7 @@ impl Client {
             }
             Err(Error::Disconnected) => {}
             Err(err) => {
-                eprintln!("craft: {} failed to initialize: {err}", self.name());
+                (self.report)(&format!("{} failed to start: {err}", self.name()));
                 self.stop();
             }
         }
@@ -254,7 +312,7 @@ impl Client {
     // servers still read only it.
     #[allow(deprecated)]
     fn initialize_params(&self) -> InitializeParams {
-        let uri: Uri = self.root.uri().parse().expect("GIO produces valid URIs");
+        let folder = self.workspace_folder();
         let text_document = TextDocumentClientCapabilities {
             synchronization: Some(TextDocumentSyncClientCapabilities {
                 did_save: Some(true),
@@ -276,11 +334,8 @@ impl Client {
         };
         InitializeParams {
             process_id: Some(std::process::id()),
-            root_uri: Some(uri.clone()),
-            workspace_folders: Some(vec![WorkspaceFolder {
-                uri,
-                name: display_name(&self.root),
-            }]),
+            root_uri: Some(folder.uri.clone()),
+            workspace_folders: Some(vec![folder]),
             capabilities: ClientCapabilities {
                 general: Some(GeneralClientCapabilities {
                     position_encodings: Some(vec![
@@ -305,13 +360,20 @@ impl Client {
         }
     }
 
+    fn workspace_folder(&self) -> WorkspaceFolder {
+        WorkspaceFolder {
+            uri: self.root.uri().parse().expect("GIO produces valid URIs"),
+            name: display_name(&self.root),
+        }
+    }
+
     /// Sends a request and waits for its response. Dropping the future
     /// cancels the request.
-    pub async fn request<R: Request>(&self, params: R::Params) -> Result<R::Result, Error>
+    pub(super) async fn request<R: Request>(&self, params: R::Params) -> Result<R::Result, Error>
     where
         R::Result: DeserializeOwned,
     {
-        let (sender, response) = async_channel::bounded(1);
+        let (sender, response) = oneshot::channel();
         let id = {
             let mut connection = self.connection.borrow_mut();
             let connection = connection.as_mut().ok_or(Error::Disconnected)?;
@@ -325,12 +387,12 @@ impl Client {
             Some(R::METHOD),
             Body::Params(params),
         );
-        let result = response.recv().await.map_err(|_| Error::Disconnected)?;
+        let result = response.await.map_err(|_| Error::Disconnected)?;
         let result = result.map_err(Error::Server)?;
         serde_json::from_str(result.get()).map_err(Error::Invalid)
     }
 
-    pub fn notify<N: Notification>(&self, params: N::Params) {
+    pub(super) fn notify<N: Notification>(&self, params: N::Params) {
         self.send(None, Some(N::METHOD), Body::Params(params));
     }
 
@@ -344,7 +406,7 @@ impl Client {
             };
             let bytes = serde_json::to_vec(&message).expect("messages serialize");
             // Fails only once the writer has stopped, as the reader soon will.
-            let _ = connection.outgoing.try_send(bytes);
+            let _ = connection.outgoing.send(bytes);
         }
     }
 
@@ -359,11 +421,10 @@ impl Client {
                     .as_mut()
                     .and_then(|connection| connection.pending.remove(&id));
                 if let Some(sender) = sender {
-                    let response = match message.error {
+                    let _ = sender.send(match message.error {
                         Some(error) => Err(error),
                         None => Ok(message.result.unwrap_or_else(null)),
-                    };
-                    let _ = sender.try_send(response);
+                    });
                 }
             }
             _ => {}
@@ -380,11 +441,7 @@ impl Client {
                 self.send(id, None, Body::Result(vec![(); items]));
             }
             request::WorkspaceFoldersRequest::METHOD => {
-                let folder = WorkspaceFolder {
-                    uri: self.root.uri().parse().expect("GIO produces valid URIs"),
-                    name: display_name(&self.root),
-                };
-                self.send(id, None, Body::Result(vec![folder]));
+                self.send(id, None, Body::Result([self.workspace_folder()]));
             }
             // Accepted, though nothing comes of them.
             request::WorkDoneProgressCreate::METHOD
@@ -439,12 +496,9 @@ impl Client {
         }
         if started.is_some_and(|started| started.elapsed() >= MIN_UPTIME_FOR_RESTART) {
             eprintln!("craft: {} stopped unexpectedly; restarting it", self.name());
-            if let Err(err) = self.connect() {
-                eprintln!("craft: could not restart {}: {err}", self.name());
-                self.state.replace(State::Stopped);
-            }
+            self.connect();
         } else {
-            eprintln!("craft: {} stopped unexpectedly", self.name());
+            (self.report)(&format!("{} stopped unexpectedly", self.name()));
             self.state.replace(State::Stopped);
         }
     }
@@ -458,7 +512,7 @@ impl Client {
     }
 
     /// Asks the server to exit, killing it if it does not in time.
-    pub async fn shutdown(self: Rc<Self>) {
+    pub(super) async fn shutdown(self: Rc<Self>) {
         let running = self.capabilities().is_some();
         self.state.replace(State::ShuttingDown);
         if running {
@@ -516,9 +570,9 @@ fn null() -> Box<RawValue> {
     RawValue::from_string("null".to_owned()).expect("null is JSON")
 }
 
-fn write_messages(stdin: ChildStdin, outbox: &async_channel::Receiver<Vec<u8>>) {
+fn write_messages(stdin: ChildStdin, outbox: mpsc::Receiver<Vec<u8>>) {
     let mut stdin = BufWriter::new(stdin);
-    while let Ok(message) = outbox.recv_blocking() {
+    for message in outbox {
         let written = write!(stdin, "Content-Length: {}\r\n\r\n", message.len())
             .and_then(|()| stdin.write_all(&message))
             .and_then(|()| stdin.flush());
@@ -528,12 +582,12 @@ fn write_messages(stdin: ChildStdin, outbox: &async_channel::Receiver<Vec<u8>>) 
     }
 }
 
-fn read_messages(stdout: ChildStdout, inbox: &async_channel::Sender<Incoming>) {
+fn read_messages(stdout: ChildStdout, inbox: &async_mpsc::UnboundedSender<Incoming>) {
     let mut stdout = BufReader::new(stdout);
     while let Ok(Some(body)) = read_message(&mut stdout) {
-        match serde_json::from_slice::<Incoming>(&body) {
+        match serde_json::from_slice(&body) {
             Ok(message) => {
-                if inbox.send_blocking(message).is_err() {
+                if inbox.unbounded_send(message).is_err() {
                     return;
                 }
             }

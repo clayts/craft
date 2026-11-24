@@ -248,7 +248,7 @@ impl Editor {
         let generation = imp.generation.get();
         let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
         let mut contents = if imp.crlf.get() {
-            text.replace('\n', "\r\n").into()
+            with_crlf(&text).into()
         } else {
             text
         };
@@ -300,5 +300,33 @@ impl Editor {
         dialog.set_default_response(Some("cancel"));
         dialog.set_close_response("cancel");
         dialog.choose_future(Some(self)).await == "overwrite"
+    }
+}
+
+/// `text` with every line ended by `\r\n`, including lines pasted in with
+/// that ending already.
+fn with_crlf(text: &str) -> String {
+    let mut result = String::with_capacity(text.len() + text.matches('\n').count());
+    let mut rest = text;
+    while let Some(end) = rest.find('\n') {
+        let line = &rest[..end];
+        result.push_str(line.strip_suffix('\r').unwrap_or(line));
+        result.push_str("\r\n");
+        rest = &rest[end + 1..];
+    }
+    result.push_str(rest);
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_crlf;
+
+    #[test]
+    fn crlf_endings_are_not_doubled() {
+        assert_eq!(with_crlf("a\nb\r\nc"), "a\r\nb\r\nc");
+        assert_eq!(with_crlf("a\n\n"), "a\r\n\r\n");
+        assert_eq!(with_crlf("a\r"), "a\r");
+        assert_eq!(with_crlf(""), "");
     }
 }
