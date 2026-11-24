@@ -20,6 +20,7 @@ use client::Client;
 pub use document::Document;
 use environment::Environment;
 pub use position::Encoding;
+use position::Shift;
 
 use crate::editor::Editor;
 

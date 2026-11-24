@@ -22,10 +22,10 @@ use lsp_types::notification::{self, Notification};
 use lsp_types::request::{self, Request};
 use lsp_types::{
     ClientCapabilities, ClientInfo, ConfigurationParams, GeneralClientCapabilities, GotoCapability,
-    HoverClientCapabilities, InitializeParams, MarkupKind, NumberOrString, PositionEncodingKind,
-    PublishDiagnosticsClientCapabilities, PublishDiagnosticsParams, ServerCapabilities,
-    TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities, Uri,
-    WorkspaceClientCapabilities, WorkspaceFolder,
+    HoverClientCapabilities, InitializeParams, MarkupKind, MessageType, NumberOrString,
+    PositionEncodingKind, PublishDiagnosticsClientCapabilities, PublishDiagnosticsParams,
+    ServerCapabilities, ShowMessageParams, TextDocumentClientCapabilities,
+    TextDocumentSyncClientCapabilities, Uri, WorkspaceClientCapabilities, WorkspaceFolder,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -465,12 +465,27 @@ impl Client {
     }
 
     fn handle(&self, method: &str, params: Option<&RawValue>) {
-        if method != notification::PublishDiagnostics::METHOD {
-            return;
+        match method {
+            notification::PublishDiagnostics::METHOD => {
+                if let Some(params) = parse(params) {
+                    self.publish(params);
+                }
+            }
+            // Errors such as failing to load the project, which leave the
+            // server running but of little use.
+            notification::ShowMessage::METHOD => {
+                if let Some(params) = parse::<ShowMessageParams>(params)
+                    && params.typ == MessageType::ERROR
+                {
+                    let message = params.message.lines().next().unwrap_or_default();
+                    (self.report)(&format!("{}: {message}", self.name()));
+                }
+            }
+            _ => {}
         }
-        let Some(params) = parse::<PublishDiagnosticsParams>(params) else {
-            return;
-        };
+    }
+
+    fn publish(&self, params: PublishDiagnosticsParams) {
         // Servers may escape URIs differently; GIO's form is the key.
         let uri = gio::File::for_uri(params.uri.as_str()).uri();
         let document = self

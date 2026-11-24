@@ -2,6 +2,7 @@
 //! and marked with the server's diagnostics.
 
 use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::future::Future;
 use std::rc::{Rc, Weak};
 
@@ -23,14 +24,17 @@ use lsp_types::{
 };
 use sourceview::prelude::*;
 
-use super::Encoding;
 use super::client::Client;
 use super::hover::HoverProvider;
+use super::{Encoding, Shift};
 use crate::editor::Editor;
 
 const ERROR: gdk::RGBA = gdk::RGBA::new(0.878, 0.106, 0.141, 1.0);
 const WARNING: gdk::RGBA = gdk::RGBA::new(0.898, 0.647, 0.039, 1.0);
 const INFORMATION: gdk::RGBA = gdk::RGBA::new(0.208, 0.518, 0.894, 1.0);
+
+/// How many edits to remember for carrying diagnostics forward.
+const MAX_EDITS: usize = 1024;
 
 pub struct Document {
     client: Rc<Client>,
@@ -44,6 +48,10 @@ pub struct Document {
     /// Whether the server has the document, which it lacks while starting.
     opened: Cell<bool>,
     version: Cell<i32>,
+    /// The edits since the last version the server published diagnostics
+    /// for, with the version each made, to carry its later diagnostics
+    /// forward.
+    edits: RefCell<VecDeque<(i32, Shift)>>,
     /// Each diagnostic's underline, which follows edits, and message.
     diagnostics: RefCell<Vec<(gtk::TextTag, String)>>,
 }
@@ -88,6 +96,7 @@ impl Document {
                 handlers,
                 opened: Cell::new(false),
                 version: Cell::new(0),
+                edits: RefCell::default(),
                 diagnostics: RefCell::default(),
             }
         });
@@ -112,6 +121,7 @@ impl Document {
     pub(super) fn open(&self) {
         self.opened.set(true);
         self.version.set(0);
+        self.edits.borrow_mut().clear();
         self.client
             .notify::<DidOpenTextDocument>(DidOpenTextDocumentParams {
                 text_document: TextDocumentItem::new(
@@ -172,17 +182,25 @@ impl Document {
         if self.opened.get() && self.sync_kind() == Some(TextDocumentSyncKind::INCREMENTAL) {
             let encoding = self.client.encoding();
             let range = Range::new(encoding.position(start), encoding.position(end));
-            self.change(TextDocumentContentChangeEvent {
+            let shift = Shift::new(range, text, encoding);
+            let version = self.change(TextDocumentContentChangeEvent {
                 range: Some(range),
                 range_length: None,
                 text: text.to_owned(),
             });
+            let mut edits = self.edits.borrow_mut();
+            if edits.len() == MAX_EDITS {
+                edits.pop_front();
+            }
+            edits.push_back((version, shift));
         }
     }
 
     /// Sends the text after an edit, for servers that take whole texts.
     fn replaced(&self) {
         if self.opened.get() && self.sync_kind() == Some(TextDocumentSyncKind::FULL) {
+            // Whole texts do not say how positions moved.
+            self.edits.borrow_mut().clear();
             self.change(TextDocumentContentChangeEvent {
                 range: None,
                 range_length: None,
@@ -191,7 +209,8 @@ impl Document {
         }
     }
 
-    fn change(&self, change: TextDocumentContentChangeEvent) {
+    /// Sends `change`, returning the version of the text it makes.
+    fn change(&self, change: TextDocumentContentChangeEvent) -> i32 {
         let version = self.version.get() + 1;
         self.version.set(version);
         self.client
@@ -199,6 +218,7 @@ impl Document {
                 text_document: VersionedTextDocumentIdentifier::new(self.uri.clone(), version),
                 content_changes: vec![change],
             });
+        version
     }
 
     fn text(&self) -> String {
@@ -206,12 +226,33 @@ impl Document {
         self.buffer.text(&start, &end, true).into()
     }
 
-    /// Underlines `diagnostics`, replacing the previous ones, unless they are
-    /// for an older version of the text.
+    /// Underlines `diagnostics`, replacing the previous ones. Those for an
+    /// earlier version of the text are carried forward through the edits
+    /// since, as a server that finds nothing new after them publishes nothing
+    /// new.
     pub(super) fn set_diagnostics(&self, version: Option<i32>, diagnostics: Vec<Diagnostic>) {
-        if !self.opened.get() || version.is_some_and(|version| version != self.version.get()) {
+        if !self.opened.get() {
             return;
         }
+        let current = self.version.get();
+        let version = version.unwrap_or(current);
+        let shifts: Vec<Shift> = {
+            let mut edits = self.edits.borrow_mut();
+            // Edits up to `version` are reflected in these diagnostics, and
+            // so in any later ones.
+            while edits.front().is_some_and(|&(edited, _)| edited <= version) {
+                edits.pop_front();
+            }
+            // Without every edit since, there is no knowing where these go.
+            if version < current
+                && edits
+                    .front()
+                    .is_none_or(|&(edited, _)| edited != version + 1)
+            {
+                return;
+            }
+            edits.iter().map(|&(_, shift)| shift).collect()
+        };
         self.clear_diagnostics();
         let encoding = self.client.encoding();
         let table = self.buffer.tag_table();
@@ -223,8 +264,11 @@ impl Document {
                 Some(DiagnosticSeverity::INFORMATION) => INFORMATION,
                 Some(_) => continue,
             };
-            let mut start = encoding.iter_at(&self.buffer, diagnostic.range.start);
-            let mut end = encoding.iter_at(&self.buffer, diagnostic.range.end);
+            let range = shifts.iter().fold(diagnostic.range, |range, shift| {
+                Range::new(shift.apply(range.start), shift.apply(range.end))
+            });
+            let mut start = encoding.iter_at(&self.buffer, range.start);
+            let mut end = encoding.iter_at(&self.buffer, range.end);
             // Underline at least a character, where the line has one.
             if start == end {
                 if !end.ends_line() {

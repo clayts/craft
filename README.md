@@ -90,8 +90,10 @@ environment if it has an `.envrc`, so servers can come from its development
 shell. If the `.envrc` is blocked, Craft says so: run `direnv allow`, then open
 a file to start its server.
 
-Errors, warnings and notes are underlined. Hovering shows their messages and
-the server's description of what is under the pointer. A server that crashes
+Errors, warnings and notes are underlined, and stay in place as you type.
+Hovering shows their messages and the server's description of what is under
+the pointer. A server's own errors, such as failing to load the project, show in
+the window. A server that crashes
 after running for at least 30 seconds restarts by itself; one that crashes
 sooner restarts when you next open a file in its language.
 
