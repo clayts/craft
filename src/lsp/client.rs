@@ -11,6 +11,7 @@ use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::rc::{Rc, Weak};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -25,7 +26,8 @@ use lsp_types::{
     HoverClientCapabilities, InitializeParams, MarkupKind, MessageType, NumberOrString,
     PositionEncodingKind, PublishDiagnosticsClientCapabilities, PublishDiagnosticsParams,
     ServerCapabilities, ShowMessageParams, TextDocumentClientCapabilities,
-    TextDocumentSyncClientCapabilities, Uri, WorkspaceClientCapabilities, WorkspaceFolder,
+    TextDocumentSyncClientCapabilities, Uri, WindowClientCapabilities, WorkspaceClientCapabilities,
+    WorkspaceFolder,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -33,6 +35,7 @@ use serde_json::value::RawValue;
 
 use super::document::Document;
 use super::environment::Environment;
+use super::progress::Progress;
 use super::{Encoding, Report, Server, SharedEnvironment};
 use crate::display_name;
 
@@ -44,9 +47,12 @@ const MIN_UPTIME_FOR_RESTART: Duration = Duration::from_secs(30);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
 pub(super) struct Client {
+    /// Distinguishes the client's work in progress from other clients'.
+    id: usize,
     server: &'static Server,
     root: gio::File,
     report: Report,
+    progress: Rc<Progress>,
     /// The server's command line and environment, once found.
     launch: RefCell<Option<Launch>>,
     state: RefCell<State>,
@@ -140,17 +146,22 @@ enum Body<T> {
 
 impl Client {
     /// Starts `server` for the project at `root`, in the project's
-    /// `environment` once it is loaded, telling `report` of failures.
+    /// `environment` once it is loaded, telling `report` of failures and
+    /// `progress` of the server's work.
     pub(super) fn start(
         server: &'static Server,
         root: &gio::File,
         environment: SharedEnvironment,
         report: Report,
+        progress: Rc<Progress>,
     ) -> Rc<Self> {
+        static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
         let client = Rc::new(Self {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             server,
             root: root.clone(),
             report,
+            progress,
             launch: RefCell::default(),
             state: RefCell::new(State::Starting),
             connection: RefCell::default(),
@@ -350,6 +361,10 @@ impl Client {
                     configuration: Some(true),
                     ..Default::default()
                 }),
+                window: Some(WindowClientCapabilities {
+                    work_done_progress: Some(true),
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
             client_info: Some(ClientInfo {
@@ -481,6 +496,11 @@ impl Client {
                     (self.report)(&format!("{}: {message}", self.name()));
                 }
             }
+            notification::Progress::METHOD => {
+                if let Some(params) = parse(params) {
+                    self.progress.update(self.id, self.name(), params);
+                }
+            }
             _ => {}
         }
     }
@@ -501,11 +521,7 @@ impl Client {
     /// Handles the server's exit, restarting it if it had been running long
     /// enough to have probably crashed on something passing.
     fn disconnected(self: &Rc<Self>) {
-        // Dropping the connection reaps the process and fails pending requests.
-        let started = self.connection.take().map(|connection| connection.started);
-        for document in self.documents() {
-            document.closed();
-        }
+        let started = self.disconnect();
         if matches!(*self.state.borrow(), State::ShuttingDown | State::Stopped) {
             return;
         }
@@ -520,10 +536,20 @@ impl Client {
 
     fn stop(&self) {
         self.state.replace(State::Stopped);
-        self.connection.take();
+        self.disconnect();
+    }
+
+    /// Ends the connection, killing the server if it is still running, and
+    /// forgets what the server had: the documents and its work in progress.
+    /// Returns when the connection began.
+    fn disconnect(&self) -> Option<Instant> {
+        // Dropping the connection reaps the process and fails pending requests.
+        let started = self.connection.take().map(|connection| connection.started);
         for document in self.documents() {
             document.closed();
         }
+        self.progress.clear(self.id);
+        started
     }
 
     /// Asks the server to exit, killing it if it does not in time.

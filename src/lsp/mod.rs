@@ -6,6 +6,7 @@ mod document;
 mod environment;
 mod hover;
 mod position;
+mod progress;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -21,6 +22,7 @@ pub use document::Document;
 use environment::Environment;
 pub use position::Encoding;
 use position::Shift;
+use progress::Progress;
 
 use crate::editor::Editor;
 
@@ -129,6 +131,7 @@ pub struct Servers {
     clients: RefCell<HashMap<(usize, glib::GString), Rc<Client>>>,
     environments: RefCell<HashMap<glib::GString, SharedEnvironment>>,
     report: Report,
+    progress: Rc<Progress>,
 }
 
 impl Servers {
@@ -138,7 +141,13 @@ impl Servers {
             clients: RefCell::default(),
             environments: RefCell::default(),
             report: Rc::new(report),
+            progress: Progress::new(),
         }
+    }
+
+    /// Shows what the servers are busy with.
+    pub fn indicator(&self) -> &gtk::Revealer {
+        self.progress.widget()
     }
 
     /// Connects `editor` to the server for its language, starting it for the
@@ -166,7 +175,13 @@ impl Servers {
             {
                 return;
             }
-            let client = Client::start(server, root, environment, Rc::clone(&self.report));
+            let client = Client::start(
+                server,
+                root,
+                environment,
+                Rc::clone(&self.report),
+                Rc::clone(&self.progress),
+            );
             let stopped = self.clients.borrow_mut().insert(key, Rc::clone(&client));
             // The new server takes over the stopped one's files.
             for document in stopped.iter().flat_map(|stopped| stopped.documents()) {

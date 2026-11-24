@@ -61,7 +61,7 @@ mod imp {
             let obj = self.obj();
             obj.set_title(Some("Craft"));
             obj.set_default_size(1000, 700);
-            self.servers.get_or_init(|| {
+            let servers = self.servers.get_or_init(|| {
                 lsp::Servers::new(glib::clone!(
                     #[weak]
                     obj,
@@ -86,6 +86,7 @@ mod imp {
                 .title_widget(&self.heading)
                 .build();
             header.pack_start(&self.sidebar_button);
+            header.pack_end(servers.indicator());
 
             let open = gtk::Button::builder()
                 .label("_Open Folder…")
