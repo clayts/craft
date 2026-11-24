@@ -93,8 +93,7 @@ a file to start its server.
 Errors, warnings and notes are underlined, and stay in place as you type.
 Hovering shows their messages and the server's description of what is under
 the pointer. A server's own errors, such as failing to load the project, show in
-the window, and the header bar shows what servers are busy with whenever it
-takes more than a second. A server that crashes
+the window, and the header bar shows what servers are busy with. A server that crashes
 after running for at least 30 seconds restarts by itself; one that crashes
 sooner restarts when you next open a file in its language.
 

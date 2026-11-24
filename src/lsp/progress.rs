@@ -1,6 +1,6 @@
 //! The header bar's indicator of what language servers are busy with, which
-//! shows work once it has gone on for more than a second, and stays while
-//! work follows work.
+//! shows work once it has gone on for `DELAY`, and stays while work follows
+//! work.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -10,8 +10,8 @@ use gtk::glib;
 use gtk::prelude::*;
 use lsp_types::{NumberOrString, ProgressParams, ProgressParamsValue, WorkDoneProgress};
 
-/// How long work goes on before it is shown.
-const DELAY: Duration = Duration::from_secs(1);
+/// How long work goes on before it is shown: for now, no time at all.
+const DELAY: Duration = Duration::ZERO;
 
 /// How long the indicator stays after the last work ends, in case more
 /// begins, as it does between the stages of a server's start.
