@@ -2,6 +2,7 @@
 //! found on the project's `PATH`, and connects each open file to its server.
 
 mod client;
+mod completion;
 mod document;
 mod environment;
 mod hover;

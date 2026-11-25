@@ -22,12 +22,13 @@ use gtk::{gio, glib};
 use lsp_types::notification::{self, Notification};
 use lsp_types::request::{self, Request};
 use lsp_types::{
-    ClientCapabilities, ClientInfo, ConfigurationParams, GeneralClientCapabilities, GotoCapability,
-    HoverClientCapabilities, InitializeParams, MarkupKind, MessageType, NumberOrString,
-    PositionEncodingKind, PublishDiagnosticsClientCapabilities, PublishDiagnosticsParams,
-    ServerCapabilities, ShowMessageParams, TextDocumentClientCapabilities,
-    TextDocumentSyncClientCapabilities, Uri, WindowClientCapabilities, WorkspaceClientCapabilities,
-    WorkspaceFolder,
+    ClientCapabilities, ClientInfo, CompletionClientCapabilities, CompletionItemCapability,
+    CompletionItemCapabilityResolveSupport, ConfigurationParams, GeneralClientCapabilities,
+    GotoCapability, HoverClientCapabilities, InitializeParams, MarkupKind, MessageType,
+    NumberOrString, PositionEncodingKind, PublishDiagnosticsClientCapabilities,
+    PublishDiagnosticsParams, ServerCapabilities, ShowMessageParams,
+    TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities, Uri,
+    WindowClientCapabilities, WorkspaceClientCapabilities, WorkspaceFolder,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -331,6 +332,19 @@ impl Client {
             }),
             publish_diagnostics: Some(PublishDiagnosticsClientCapabilities {
                 version_support: Some(true),
+                ..Default::default()
+            }),
+            completion: Some(CompletionClientCapabilities {
+                completion_item: Some(CompletionItemCapability {
+                    snippet_support: Some(true),
+                    documentation_format: Some(vec![MarkupKind::PlainText]),
+                    // Imports are costly to find for every item.
+                    resolve_support: Some(CompletionItemCapabilityResolveSupport {
+                        properties: vec!["additionalTextEdits".to_owned()],
+                    }),
+                    ..Default::default()
+                }),
+                context_support: Some(true),
                 ..Default::default()
             }),
             hover: Some(HoverClientCapabilities {

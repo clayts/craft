@@ -5,8 +5,8 @@ GtkSourceView.
 
 Craft has a project file tree, tabs, find and replace, and language server
 support, and nothing else: no settings, git, AI, plugins, terminal or run
-commands. Find and replace, completion, semantic highlighting and symbol
-search are not built yet.
+commands. Find and replace, semantic highlighting and symbol search are not
+built yet.
 
 ## Building
 
@@ -59,6 +59,7 @@ instance, so running it again opens into the windows already on screen.
 | Ctrl+Q                               | Quit             |
 | F9                                   | Toggle sidebar   |
 | F12                                  | Go to definition |
+| Ctrl+Space                           | Complete         |
 | Ctrl+Tab, Ctrl+Page Up/Down          | Switch tab       |
 | Alt+1…9                              | Go to tab        |
 | Ctrl+Shift+Page Up/Down              | Move tab         |
@@ -92,8 +93,14 @@ a file to start its server.
 
 Errors, warnings and notes are underlined, and stay in place as you type.
 Hovering shows their messages and the server's description of what is under
-the pointer. A server's own errors, such as failing to load the project, show in
-the window, and the header bar shows what servers are busy with. A server that crashes
+the pointer.
+
+Completions appear as you type, or on Ctrl+Space, best matches first. Enter or
+Tab inserts the one selected, adding any import it needs, and Tab then moves
+through its fields, such as a function's arguments.
+
+A server's own errors, such as failing to load the project, show in the window,
+and the header bar shows what servers are busy with. A server that crashes
 after running for at least 30 seconds restarts by itself; one that crashes
 sooner restarts when you next open a file in its language.
 

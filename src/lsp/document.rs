@@ -11,9 +11,10 @@ use gtk::{gdk, gio, glib, pango};
 use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument,
 };
-use lsp_types::request::{GotoDefinition, HoverRequest};
+use lsp_types::request::{Completion, GotoDefinition, HoverRequest, ResolveCompletionItem};
 use lsp_types::{
-    Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    CompletionContext, CompletionItem, CompletionParams, CompletionResponse, Diagnostic,
+    DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, GotoDefinitionParams,
     GotoDefinitionResponse, HoverContents, HoverParams, HoverProviderCapability, MarkedString,
     OneOf, PartialResultParams, Position, Range, ServerCapabilities,
@@ -25,6 +26,7 @@ use lsp_types::{
 use sourceview::prelude::*;
 
 use super::client::Client;
+use super::completion;
 use super::hover::HoverProvider;
 use super::{Encoding, Shift};
 use crate::editor::Editor;
@@ -44,6 +46,7 @@ pub struct Document {
     buffer: sourceview::Buffer,
     view: sourceview::View,
     hover: HoverProvider,
+    completion: completion::Provider,
     handlers: Vec<glib::SignalHandlerId>,
     /// Whether the server has the document, which it lacks while starting.
     opened: Cell<bool>,
@@ -93,6 +96,7 @@ impl Document {
                 buffer: buffer.clone(),
                 view: view.clone(),
                 hover: HoverProvider::new(this.clone()),
+                completion: completion::Provider::new(this.clone()),
                 handlers,
                 opened: Cell::new(false),
                 version: Cell::new(0),
@@ -101,6 +105,7 @@ impl Document {
             }
         });
         view.hover().add_provider(&document.hover);
+        view.completion().add_provider(&document.completion);
         client.add(&document.uri, &document);
         document
     }
@@ -115,6 +120,14 @@ impl Document {
 
     pub fn encoding(&self) -> Encoding {
         self.client.encoding()
+    }
+
+    pub(super) fn buffer(&self) -> &sourceview::Buffer {
+        &self.buffer
+    }
+
+    pub(super) fn view(&self) -> &sourceview::View {
+        &self.view
     }
 
     /// Gives the server the document, as it now is.
@@ -338,6 +351,55 @@ impl Document {
         }
     }
 
+    /// Whether typing `c` starts completion, as the server says.
+    pub(super) fn is_completion_trigger(&self, c: char) -> bool {
+        self.client.capabilities().is_some_and(|capabilities| {
+            capabilities
+                .completion_provider
+                .as_ref()
+                .and_then(|options| options.trigger_characters.as_ref())
+                .is_some_and(|triggers| triggers.iter().any(|trigger| trigger.chars().eq([c])))
+        })
+    }
+
+    /// The server's completions at `iter`, asked for in `context`.
+    pub(super) fn complete(
+        &self,
+        iter: &gtk::TextIter,
+        context: CompletionContext,
+    ) -> impl Future<Output = Option<CompletionResponse>> + use<> {
+        let request = self.position_request(iter, |capabilities| {
+            capabilities.completion_provider.is_some()
+        });
+        async move {
+            let (client, position) = request?;
+            client
+                .request::<Completion>(CompletionParams {
+                    text_document_position: position,
+                    work_done_progress_params: WorkDoneProgressParams::default(),
+                    partial_result_params: PartialResultParams::default(),
+                    context: Some(context),
+                })
+                .await
+                .ok()?
+        }
+    }
+
+    /// `item` as the server fills it in, if it may have left edits out, such
+    /// as imports. Servers leave them out only of items they attach data to,
+    /// to find them again, whether or not they declare they resolve items:
+    /// rust-analyzer declares it only for other fields.
+    pub(super) fn resolve(
+        &self,
+        item: &CompletionItem,
+    ) -> Option<impl Future<Output = Option<CompletionItem>> + use<>> {
+        let resolvable = item.additional_text_edits.is_none() && item.data.is_some();
+        (resolvable && self.opened.get()).then(|| {
+            let (client, item) = (Rc::clone(&self.client), item.clone());
+            async move { client.request::<ResolveCompletionItem>(item).await.ok() }
+        })
+    }
+
     /// The file and position where what is at `iter` is defined.
     pub fn definition(
         &self,
@@ -404,6 +466,7 @@ impl Drop for Document {
             self.buffer.disconnect(handler);
         }
         self.view.hover().remove_provider(&self.hover);
+        self.view.completion().remove_provider(&self.completion);
         self.clear_diagnostics();
         if self.opened.get() && self.client.capabilities().is_some() {
             self.client
