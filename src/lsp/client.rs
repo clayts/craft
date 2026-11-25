@@ -8,7 +8,7 @@ use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -36,8 +36,9 @@ use serde_json::value::RawValue;
 
 use super::document::Document;
 use super::environment::Environment;
+use super::problems::Problems;
 use super::progress::Progress;
-use super::{Encoding, Report, Server, SharedEnvironment};
+use super::{Encoding, Server, SharedEnvironment};
 use crate::display_name;
 
 /// How long a server must have run for a crash to be worth a restart, rather
@@ -53,7 +54,7 @@ pub(super) struct Client {
     server: &'static Server,
     /// The project folder, if the server is for one.
     root: Option<gio::File>,
-    report: Report,
+    problems: Rc<Problems>,
     progress: Rc<Progress>,
     /// The server's command line and environment, once found.
     launch: RefCell<Option<Launch>>,
@@ -148,13 +149,13 @@ enum Body<T> {
 
 impl Client {
     /// Starts `server` for the project folder `root`, or for files on their
-    /// own, in `environment` once it is loaded, telling `report` of failures
-    /// and `progress` of the server's work.
+    /// own, in `environment` once it is loaded, telling `problems` of what
+    /// goes wrong and `progress` of the server's work.
     pub(super) fn start(
         server: &'static Server,
         root: Option<&gio::File>,
         environment: SharedEnvironment,
-        report: Report,
+        problems: Rc<Problems>,
         progress: Rc<Progress>,
     ) -> Rc<Self> {
         static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
@@ -162,7 +163,7 @@ impl Client {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             server,
             root: root.cloned(),
-            report,
+            problems,
             progress,
             launch: RefCell::default(),
             state: RefCell::new(State::Starting),
@@ -242,7 +243,8 @@ impl Client {
     /// Starts the server process and initializes it, or reports why not.
     fn connect(self: &Rc<Self>) {
         if let Err(err) = self.spawn() {
-            (self.report)(&format!("Could not start {}: {err}", self.name()));
+            self.problems
+                .report(self.name(), &format!("Could not start: {err}"));
             self.state.replace(State::Stopped);
             return;
         }
@@ -263,10 +265,13 @@ impl Client {
             launch.environment.apply(&mut command);
             command
         };
-        // Without a project, in a folder holding none, as servers such as
+        // Without a project, in an empty folder, as servers such as
         // rust-analyzer look for one in their working folder instead.
-        let dir = self.root.as_ref().and_then(gio::File::path);
-        command.current_dir(dir.as_deref().unwrap_or(Path::new("/")));
+        let dir = match self.root.as_ref().and_then(gio::File::path) {
+            Some(dir) => dir,
+            None => empty_dir()?,
+        };
+        command.current_dir(dir);
         let mut child = command.spawn()?;
         let stdin = child.stdin.take().expect("stdin is piped");
         let stdout = child.stdout.take().expect("stdout is piped");
@@ -316,7 +321,8 @@ impl Client {
             }
             Err(Error::Disconnected) => {}
             Err(err) => {
-                (self.report)(&format!("{} failed to start: {err}", self.name()));
+                self.problems
+                    .report(self.name(), &format!("Failed to start: {err}"));
                 self.stop();
             }
         }
@@ -509,8 +515,7 @@ impl Client {
                 if let Some(params) = parse::<ShowMessageParams>(params)
                     && params.typ == MessageType::ERROR
                 {
-                    let message = params.message.lines().next().unwrap_or_default();
-                    (self.report)(&format!("{}: {message}", self.name()));
+                    self.problems.report(self.name(), &params.message);
                 }
             }
             notification::Progress::METHOD => {
@@ -546,7 +551,7 @@ impl Client {
             eprintln!("craft: {} stopped unexpectedly; restarting it", self.name());
             self.connect();
         } else {
-            (self.report)(&format!("{} stopped unexpectedly", self.name()));
+            self.problems.report(self.name(), "Stopped unexpectedly");
             self.state.replace(State::Stopped);
         }
     }
@@ -618,6 +623,13 @@ impl Drop for Pending<'_> {
                 });
         }
     }
+}
+
+/// A folder of Craft's own for servers to run in, holding no project.
+fn empty_dir() -> io::Result<PathBuf> {
+    let dir = glib::user_runtime_dir().join("craft");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
 }
 
 fn parse<T: DeserializeOwned>(params: Option<&RawValue>) -> Option<T> {

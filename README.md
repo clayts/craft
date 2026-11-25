@@ -103,10 +103,12 @@ Completions appear as you type, or on Ctrl+Space, best matches first. Enter or
 Tab inserts the one selected, adding any import it needs, and Tab then moves
 through its fields, such as a function's arguments.
 
-A server's own errors, such as failing to load the project, show in the window,
-and the header bar shows what servers are busy with. A server that crashes
-after running for at least 30 seconds restarts by itself; one that crashes
-sooner restarts when you next open a file in its language.
+The header bar shows what servers are busy with, and a warning button, when
+something has gone wrong, lists the problems in full: a server's own errors,
+such as failing to load the project, a server failing to start or crashing, and
+a direnv environment failing to load. A server that crashes after running for at
+least 30 seconds restarts by itself; one that crashes sooner restarts when you
+next open a file in its language.
 
 ## Behaviour
 
@@ -125,12 +127,12 @@ sooner restarts when you next open a file in its language.
 
 ## Source
 
-| File               | Contents                                                          |
-| ------------------ | ----------------------------------------------------------------- |
-| `src/main.rs`      | Application: startup, and routing folders and files               |
-| `src/window.rs`    | Project window: layout, tabs, actions, close prompts              |
-| `src/editor.rs`    | One open file: source view, loading and saving                    |
-| `src/file_tree.rs` | Sidebar tree: loaded lazily, updated live                         |
-| `src/lsp/`         | Language servers: environments, processes, protocol, files, hover |
-| `package.nix`      | Nix package                                                       |
-| `flake.nix`        | Nix flake: package, development shell and formatter               |
+| File               | Contents                                                                    |
+| ------------------ | --------------------------------------------------------------------------- |
+| `src/main.rs`      | Application: startup, and routing folders and files                         |
+| `src/window.rs`    | Project window: layout, tabs, actions, close prompts                        |
+| `src/editor.rs`    | One open file: source view, loading and saving                              |
+| `src/file_tree.rs` | Sidebar tree: loaded lazily, updated live                                   |
+| `src/lsp/`         | Language servers: environments, processes, files, hover, completion, status |
+| `package.nix`      | Nix package                                                                 |
+| `flake.nix`        | Nix flake: package, development shell and formatter                         |

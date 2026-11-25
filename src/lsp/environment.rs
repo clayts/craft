@@ -30,10 +30,7 @@ impl Environment {
             return Ok(Self::default());
         };
         let name = display_name(root);
-        let fail = |detail: &dyn Display| {
-            eprintln!("craft: direnv failed in {}: {detail}", dir.display());
-            format!("Could not load {name}’s direnv environment")
-        };
+        let fail = |detail: &dyn Display| format!("Could not load {name}’s environment:\n{detail}");
         let launcher = gio::SubprocessLauncher::new(
             gio::SubprocessFlags::STDOUT_PIPE | gio::SubprocessFlags::STDERR_PIPE,
         );
@@ -49,7 +46,7 @@ impl Environment {
             return Err(if stderr.contains(" is blocked") {
                 format!("{name}’s .envrc is blocked; run “direnv allow” to use it")
             } else {
-                fail(&stderr)
+                fail(&plain(&stderr))
             });
         }
         Self::parse(stdout.as_deref().unwrap_or_default()).map_err(|err| fail(&err))
@@ -102,6 +99,22 @@ impl Environment {
     }
 }
 
+/// `text` without the escape sequences that color it on a terminal, which
+/// direnv writes regardless.
+fn plain(text: &str) -> String {
+    let mut plain = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            plain.push(c);
+        } else if chars.next() == Some('[') {
+            // Parameters, up to the final letter.
+            chars.by_ref().find(|c| ('@'..='~').contains(c));
+        }
+    }
+    plain
+}
+
 fn is_executable(file: &Path) -> bool {
     file.metadata()
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
@@ -120,6 +133,15 @@ mod tests {
         assert_eq!(environment.changes["A"].as_deref(), Some("1"));
         assert_eq!(environment.changes["B"], None);
         assert!(!environment.failed);
+    }
+
+    #[test]
+    fn colors_are_stripped() {
+        assert_eq!(
+            plain("\x1b[31mdirenv: error .envrc\x1b[0m\n\x1b[1;33mok"),
+            "direnv: error .envrc\nok"
+        );
+        assert_eq!(plain("plain"), "plain");
     }
 
     #[test]

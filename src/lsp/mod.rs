@@ -8,6 +8,7 @@ mod document;
 mod environment;
 mod hover;
 mod position;
+mod problems;
 mod progress;
 
 use std::cell::RefCell;
@@ -24,12 +25,10 @@ pub use document::Document;
 use environment::Environment;
 pub use position::Encoding;
 use position::Shift;
+use problems::Problems;
 use progress::Progress;
 
 use crate::editor::Editor;
-
-/// Tells the user of a problem.
-type Report = Rc<dyn Fn(&str)>;
 
 /// A project's environment, loaded once for all of its servers.
 type SharedEnvironment = Shared<LocalBoxFuture<'static, Rc<Environment>>>;
@@ -135,31 +134,40 @@ pub struct Servers {
     clients: RefCell<HashMap<usize, Rc<Client>>>,
     /// The environment servers run in, once one needs it.
     environment: RefCell<Option<SharedEnvironment>>,
-    report: Report,
     progress: Rc<Progress>,
+    problems: Rc<Problems>,
+    /// Shows what the servers are busy with, and what went wrong.
+    indicator: gtk::Box,
 }
 
-impl Servers {
-    /// Servers that tell `report` of the problems they meet.
-    pub fn new(report: impl Fn(&str) + 'static) -> Self {
+impl Default for Servers {
+    fn default() -> Self {
+        let (progress, problems) = (Progress::new(), Problems::new());
+        let indicator = gtk::Box::builder().spacing(6).build();
+        indicator.append(progress.widget());
+        indicator.append(problems.widget());
         Self {
             root: RefCell::default(),
             clients: RefCell::default(),
             environment: RefCell::default(),
-            report: Rc::new(report),
-            progress: Progress::new(),
+            progress,
+            problems,
+            indicator,
         }
     }
+}
 
-    /// Shows what the servers are busy with.
-    pub fn indicator(&self) -> &gtk::Revealer {
-        self.progress.widget()
+impl Servers {
+    /// Shows what the servers are busy with, and what went wrong.
+    pub fn indicator(&self) -> &gtk::Box {
+        &self.indicator
     }
 
     /// Runs the servers for the project folder `root`, which the window now
     /// shows, connecting `editors` to them.
     pub fn set_root(&self, root: &gio::File, editors: impl IntoIterator<Item = Editor>) {
         self.shutdown();
+        self.problems.clear();
         self.root.replace(Some(root.clone()));
         for editor in editors {
             self.attach(&editor);
@@ -195,7 +203,7 @@ impl Servers {
                 server,
                 root.as_ref(),
                 environment,
-                Rc::clone(&self.report),
+                Rc::clone(&self.problems),
                 Rc::clone(&self.progress),
             );
             let stopped = self.clients.borrow_mut().insert(index, Rc::clone(&client));
@@ -221,13 +229,13 @@ impl Servers {
         {
             return environment.clone();
         }
-        let (root, report) = (self.root.borrow().clone(), Rc::clone(&self.report));
+        let (root, problems) = (self.root.borrow().clone(), Rc::clone(&self.problems));
         let environment = async move {
             let Some(root) = root else {
                 return Rc::new(Environment::default());
             };
             Rc::new(Environment::load(&root).await.unwrap_or_else(|message| {
-                report(&message);
+                problems.report("direnv", &message);
                 Environment::failed()
             }))
         }

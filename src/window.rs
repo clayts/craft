@@ -5,10 +5,10 @@ use adw::subclass::prelude::*;
 use gtk::{gio, glib};
 
 use crate::editor::Editor;
-use crate::{display_name, file_tree, lsp};
+use crate::{display_name, file_tree};
 
 mod imp {
-    use std::cell::{OnceCell, RefCell};
+    use std::cell::RefCell;
 
     use adw::prelude::*;
     use adw::subclass::prelude::*;
@@ -28,7 +28,7 @@ mod imp {
         pub(super) heading: adw::WindowTitle,
         pub(super) stack: gtk::Stack,
         pub(super) tabs: adw::TabView,
-        pub(super) servers: OnceCell<lsp::Servers>,
+        pub(super) servers: lsp::Servers,
     }
 
     #[glib::object_subclass]
@@ -61,13 +61,6 @@ mod imp {
             let obj = self.obj();
             obj.set_title(Some("Craft"));
             obj.set_default_size(1000, 700);
-            let servers = self.servers.get_or_init(|| {
-                lsp::Servers::new(glib::clone!(
-                    #[weak]
-                    obj,
-                    move |message: &str| obj.toast(message)
-                ))
-            });
 
             self.sidebar.set_hscrollbar_policy(gtk::PolicyType::Never);
             let sidebar = adw::ToolbarView::new();
@@ -86,7 +79,7 @@ mod imp {
                 .title_widget(&self.heading)
                 .build();
             header.pack_start(&self.sidebar_button);
-            header.pack_end(servers.indicator());
+            header.pack_end(self.servers.indicator());
 
             let open = gtk::Button::builder()
                 .label("_Open Folder…")
@@ -151,9 +144,7 @@ mod imp {
         }
 
         fn dispose(&self) {
-            if let Some(servers) = self.servers.get() {
-                servers.shutdown();
-            }
+            self.servers.shutdown();
         }
     }
 
@@ -202,7 +193,7 @@ impl Window {
     pub fn set_project(&self, root: &gio::File) {
         let imp = self.imp();
         imp.project.replace(Some(root.clone()));
-        self.servers().set_root(root, self.editors());
+        imp.servers.set_root(root, self.editors());
         let tree = file_tree::new(
             root,
             glib::clone!(
@@ -272,7 +263,7 @@ impl Window {
         page.set_tooltip(&glib::markup_escape_text(&editor.file().parse_name()));
         tabs.set_selected_page(&page);
         editor.grab_focus();
-        self.servers().attach(editor);
+        self.imp().servers.attach(editor);
     }
 
     /// Selects and focuses the tab editing `file`, if there is one.
@@ -282,10 +273,6 @@ impl Window {
         tabs.set_selected_page(&tabs.page(&editor));
         editor.grab_focus();
         Some(editor)
-    }
-
-    fn servers(&self) -> &lsp::Servers {
-        self.imp().servers.get().expect("windows set up servers")
     }
 
     fn current_editor(&self) -> Option<Editor> {
