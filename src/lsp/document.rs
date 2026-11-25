@@ -118,8 +118,8 @@ impl Document {
         self.language
     }
 
-    pub(super) fn is_with(&self, client: &Rc<Client>) -> bool {
-        Rc::ptr_eq(&self.client, client)
+    pub(super) fn client(&self) -> &Rc<Client> {
+        &self.client
     }
 
     pub fn encoding(&self) -> Encoding {

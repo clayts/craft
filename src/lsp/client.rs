@@ -197,6 +197,15 @@ impl Client {
             .map_or(self.server.commands[0][0], |launch| launch.command[0])
     }
 
+    /// The root folder of the project the server is for.
+    pub(super) fn root(&self) -> &gio::File {
+        &self.root
+    }
+
+    pub(super) fn has_documents(&self) -> bool {
+        !self.documents.borrow().is_empty()
+    }
+
     pub(super) fn is_stopped(&self) -> bool {
         matches!(*self.state.borrow(), State::Stopped)
     }

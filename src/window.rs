@@ -1,11 +1,14 @@
 //! A project window: the file tree beside tabbed editors.
 
+use std::rc::Rc;
+
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
 
 use crate::editor::Editor;
-use crate::{display_name, file_tree, lsp};
+use crate::lsp::{self, Document};
+use crate::{display_name, file_tree};
 
 mod imp {
     use std::cell::{OnceCell, RefCell};
@@ -226,14 +229,19 @@ impl Window {
         let win = self.downgrade();
         glib::spawn_future_local(async move {
             for file in files {
-                Self::open(&win, file).await;
+                Self::open(&win, file, None).await;
             }
         });
     }
 
     /// Selects the tab editing `file`, reading the file into a new tab first
-    /// if needed.
-    async fn open(win: &glib::WeakRef<Self>, file: gio::File) -> Option<Editor> {
+    /// if needed, for the language server of `origin` if its definition led
+    /// there.
+    async fn open(
+        win: &glib::WeakRef<Self>,
+        file: gio::File,
+        origin: Option<Rc<Document>>,
+    ) -> Option<Editor> {
         if let Some(editor) = win.upgrade()?.select(&file) {
             return Some(editor);
         }
@@ -242,7 +250,7 @@ impl Window {
         match result {
             // The same file may have been opened while this one was read.
             Ok(editor) => Some(win.select(&file).unwrap_or_else(|| {
-                win.add(&editor);
+                win.add(&editor, origin.as_deref());
                 editor
             })),
             Err(err) => {
@@ -252,7 +260,7 @@ impl Window {
         }
     }
 
-    fn add(&self, editor: &Editor) {
+    fn add(&self, editor: &Editor, origin: Option<&Document>) {
         let tabs = &self.imp().tabs;
         let page = tabs.append(editor);
         // Connected before the binding below sets the first title, as a first
@@ -273,10 +281,8 @@ impl Window {
         page.set_tooltip(&glib::markup_escape_text(&editor.file().parse_name()));
         tabs.set_selected_page(&page);
         editor.grab_focus();
-        // Without a project, a file's folder serves as its server's root.
-        if let Some(root) = self.project().or_else(|| editor.file().parent()) {
-            self.servers().attach(editor, &root);
-        }
+        self.servers()
+            .attach(editor, self.project().as_ref(), origin);
     }
 
     /// Selects and focuses the tab editing `file`, if there is one.
@@ -345,16 +351,17 @@ impl Window {
         let cursor = buffer.iter_at_mark(&buffer.get_insert());
         let request = editor
             .document()
-            .map(|document| (document.definition(&cursor), document.encoding()));
+            .map(|document| (document.definition(&cursor), document));
         let win = self.downgrade();
         glib::spawn_future_local(async move {
             let found = match request {
-                Some((definition, encoding)) => definition.await.map(|found| (found, encoding)),
+                Some((definition, document)) => definition.await.map(|found| (found, document)),
                 None => None,
             };
             match found {
-                Some(((file, position), encoding)) => {
-                    if let Some(editor) = Self::open(&win, file).await {
+                Some(((file, position), document)) => {
+                    let encoding = document.encoding();
+                    if let Some(editor) = Self::open(&win, file, Some(document)).await {
                         editor.goto(position, encoding);
                     }
                 }
