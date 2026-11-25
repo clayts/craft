@@ -178,6 +178,8 @@ impl Client {
             return;
         }
         let Some((program, command)) = environment.find(self.server.commands) else {
+            let missing = self.server.not_found(environment.path().as_deref());
+            self.status.log(self.name(), Level::Error, &missing);
             self.state.replace(State::Stopped);
             return;
         };
@@ -193,7 +195,7 @@ impl Client {
         self.launch
             .borrow()
             .as_ref()
-            .map_or(self.server.commands[0][0], |launch| launch.command[0])
+            .map_or(self.server.name(), |launch| launch.command[0])
     }
 
     pub(super) fn is_stopped(&self) -> bool {
@@ -240,11 +242,8 @@ impl Client {
     /// Starts the server process and initializes it, or reports why not.
     fn connect(self: &Rc<Self>) {
         if let Err(err) = self.spawn() {
-            self.status.log(
-                Level::Error,
-                self.name(),
-                &format!("Could not start: {err}"),
-            );
+            let failed = format!("Could not start: {err}");
+            self.status.log(self.name(), Level::Error, &failed);
             self.state.replace(State::Stopped);
             return;
         }
@@ -317,7 +316,7 @@ impl Client {
                     .replace(State::Running(Box::new(result.capabilities)));
                 if let Some(launch) = &*self.launch.borrow() {
                     let started = format!("Started {}", launch.program.display());
-                    self.status.log(Level::Info, self.name(), &started);
+                    self.status.started(self.name(), &started);
                 }
                 for document in self.documents() {
                     document.open();
@@ -326,7 +325,7 @@ impl Client {
             Err(Error::Disconnected) => {}
             Err(err) => {
                 let failed = format!("Failed to start: {err}");
-                self.status.log(Level::Error, self.name(), &failed);
+                self.status.log(self.name(), Level::Error, &failed);
                 self.stop();
             }
         }
@@ -519,7 +518,7 @@ impl Client {
                 if let Some(params) = parse::<ShowMessageParams>(params)
                     && let Some(level) = level(params.typ)
                 {
-                    self.status.log(level, self.name(), &params.message);
+                    self.status.log(self.name(), level, &params.message);
                 }
             }
             notification::Progress::METHOD => {
@@ -553,11 +552,11 @@ impl Client {
         }
         if started.is_some_and(|started| started.elapsed() >= MIN_UPTIME_FOR_RESTART) {
             let restarting = "Stopped unexpectedly; restarting it";
-            self.status.log(Level::Warning, self.name(), restarting);
+            self.status.log(self.name(), Level::Warning, restarting);
             self.connect();
         } else {
             self.status
-                .log(Level::Error, self.name(), "Stopped unexpectedly");
+                .log(self.name(), Level::Error, "Stopped unexpectedly");
             self.state.replace(State::Stopped);
         }
     }

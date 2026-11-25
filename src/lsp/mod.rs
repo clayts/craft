@@ -12,6 +12,7 @@ mod status;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::rc::Rc;
 
 use futures_util::FutureExt;
@@ -113,6 +114,41 @@ const SERVERS: &[Server] = &[
     },
 ];
 
+impl Server {
+    /// The name of the server's first program, which stands for the server
+    /// until one is found.
+    fn name(&self) -> &'static str {
+        self.commands[0][0]
+    }
+
+    /// Says that none of the server's programs is on `path`, and what that
+    /// holds.
+    fn not_found(&self, path: Option<&OsStr>) -> String {
+        let others: Vec<&str> = self.commands[1..]
+            .iter()
+            .map(|command| command[0])
+            .collect();
+        let missing = match others.as_slice() {
+            [] => "Not found on the PATH".to_owned(),
+            [other] => format!("Not found on the PATH, nor is {other}"),
+            [rest @ .., last] => {
+                format!(
+                    "Not found on the PATH, nor are {} or {last}",
+                    rest.join(", ")
+                )
+            }
+        };
+        let dirs: Vec<String> = path
+            .map(|path| {
+                std::env::split_paths(path)
+                    .map(|dir| dir.display().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        format!("{missing}\n\nThe PATH holds:\n{}", dirs.join("\n"))
+    }
+}
+
 /// The server for the `GtkSourceView` language `language`, by index, with the
 /// language's LSP identifier.
 fn server_for(language: &str) -> Option<(usize, &'static str)> {
@@ -156,7 +192,6 @@ impl Servers {
     /// shows, connecting `editors` to them.
     pub fn set_root(&self, root: &gio::File, editors: impl IntoIterator<Item = Editor>) {
         self.shutdown();
-        self.status.clear();
         self.root.replace(Some(root.clone()));
         for editor in editors {
             self.attach(&editor);
@@ -182,10 +217,11 @@ impl Servers {
         } else {
             let environment = self.environment();
             // Once the environment is known, a missing server is too.
-            if environment
-                .peek()
-                .is_some_and(|environment| environment.find(server.commands).is_none())
+            if let Some(environment) = environment.peek()
+                && environment.find(server.commands).is_none()
             {
+                let missing = server.not_found(environment.path().as_deref());
+                self.status.log(server.name(), Level::Error, &missing);
                 return;
             }
             let client = Client::start(server, root.as_ref(), environment, Rc::clone(&self.status));
@@ -217,13 +253,18 @@ impl Servers {
             let Some(root) = root else {
                 return Rc::new(Environment::default());
             };
-            Rc::new(match Environment::load(&root).await {
+            let busy = (root.path())
+                .filter(|dir| dir.join(".envrc").exists())
+                .map(|_| status.busy("direnv", "Loading the environment"));
+            let loaded = Environment::load(&root).await;
+            drop(busy);
+            Rc::new(match loaded {
                 Ok((environment, said)) => {
-                    status.log(Level::Info, "direnv", &said);
+                    status.started("direnv", &said);
                     environment
                 }
                 Err(message) => {
-                    status.log(Level::Error, "direnv", &message);
+                    status.log("direnv", Level::Error, &message);
                     Environment::failed()
                 }
             })

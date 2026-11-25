@@ -24,14 +24,24 @@ pub struct Environment {
 
 impl Environment {
     /// The environment of the project at `root`, with what direnv said of
-    /// it. Without direnv or an `.envrc`, that is Craft's own. Errors say why
-    /// direnv failed.
+    /// it, if anything. Without direnv or an `.envrc`, that is Craft's own.
+    /// Errors say why direnv failed, or why it could not run.
     pub async fn load(root: &gio::File) -> Result<(Self, String), String> {
-        let (Some(dir), Some(_)) = (root.path(), glib::find_program_in_path("direnv")) else {
+        let Some(dir) = root.path() else {
             return Ok((Self::default(), String::new()));
         };
         let name = display_name(root);
-        let fail = |detail: &dyn Display| format!("Could not load {name}’s environment:\n{detail}");
+        if glib::find_program_in_path("direnv").is_none() {
+            return if dir.join(".envrc").exists() {
+                Err(format!(
+                    "Not found on the PATH, so {name}’s .envrc goes unused"
+                ))
+            } else {
+                Ok((Self::default(), String::new()))
+            };
+        }
+        let fail =
+            |detail: &dyn Display| format!("Could not load {name}’s environment\n\n{detail}");
         let launcher = gio::SubprocessLauncher::new(
             gio::SubprocessFlags::STDOUT_PIPE | gio::SubprocessFlags::STDERR_PIPE,
         );
@@ -42,7 +52,7 @@ impl Environment {
             .communicate_utf8_future(None)
             .await
             .map_err(|err| fail(&err))?;
-        let said = plain(stderr.as_deref().unwrap_or_default());
+        let said = said(stderr.as_deref().unwrap_or_default());
         if !process.is_successful() {
             return Err(if said.contains(" is blocked") {
                 format!("{name}’s .envrc is blocked; run “direnv allow” to use it")
@@ -52,7 +62,13 @@ impl Environment {
         }
         let environment =
             Self::parse(stdout.as_deref().unwrap_or_default()).map_err(|err| fail(&err))?;
-        Ok((environment, said))
+        // direnv says nothing without an `.envrc`.
+        let loaded = if said.is_empty() {
+            said
+        } else {
+            format!("Loaded {name}’s environment\n\n{said}")
+        };
+        Ok((environment, loaded))
     }
 
     /// Craft's own environment, standing in for one direnv failed to give.
@@ -75,13 +91,18 @@ impl Environment {
         })
     }
 
+    /// The `PATH` that servers are looked for on.
+    pub fn path(&self) -> Option<OsString> {
+        match self.changes.get("PATH") {
+            Some(path) => path.as_ref().map(OsString::from),
+            None => std::env::var_os("PATH"),
+        }
+    }
+
     /// The first of `commands` whose program is on the environment's `PATH`,
     /// with the program's path.
     pub fn find<'a>(&self, commands: &'a [&'a [&'a str]]) -> Option<(PathBuf, &'a [&'a str])> {
-        let path = match self.changes.get("PATH") {
-            Some(path) => OsString::from(path.as_ref()?),
-            None => std::env::var_os("PATH")?,
-        };
+        let path = self.path()?;
         commands.iter().find_map(|&command| {
             let name = command.first()?;
             let program = std::env::split_paths(&path)
@@ -100,6 +121,16 @@ impl Environment {
             };
         }
     }
+}
+
+/// What direnv said, in plain text, without the name it begins each line with.
+fn said(stderr: &str) -> String {
+    let text = plain(stderr);
+    let lines: Vec<&str> = text
+        .lines()
+        .map(|line| line.strip_prefix("direnv: ").unwrap_or(line))
+        .collect();
+    lines.join("\n").trim().to_owned()
 }
 
 /// `text` without the escape sequences that color it on a terminal, which

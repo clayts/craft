@@ -103,13 +103,15 @@ Completions appear as you type, or on Ctrl+Space, best matches first. Enter or
 Tab inserts the one selected, adding any import it needs, and Tab then moves
 through its fields, such as a function's arguments.
 
-The language server button in the header bar shows a tick while all is well,
-a spinner while servers are busy, and a warning sign once something goes wrong.
-Clicking it shows the work under way and a log of what happened: servers
-starting, failing to start or crashing, what they said, such as failing to load
-the project, and what direnv said of the environment. A server that crashes
-after running for at least 30 seconds restarts by itself; one that crashes
-sooner restarts when you next open a file in its language.
+A button in the header bar shows how the tools a window runs, its language
+servers and direnv, are faring: a tick while all is well, a spinner while any
+is busy, and a warning sign once any has gone wrong. It lists the tools, each
+with its own sign and what it is doing or last said, and each opens onto its
+log: starting, failing to start or crashing, or its program missing from the
+`PATH`, and all it said, from errors such as failing to load the project to
+notes. A server that crashes after running for at least 30 seconds restarts by
+itself; one that crashes sooner restarts when you next open a file in its
+language.
 
 ## Behaviour
 
