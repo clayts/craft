@@ -118,10 +118,6 @@ impl Document {
         self.language
     }
 
-    pub(super) fn client(&self) -> &Rc<Client> {
-        &self.client
-    }
-
     pub fn encoding(&self) -> Encoding {
         self.client.encoding()
     }

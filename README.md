@@ -66,8 +66,8 @@ instance, so running it again opens into the windows already on screen.
 
 ## Language servers
 
-Craft starts a language server for each language and project you open files
-in, using the first of these it finds on the project's `PATH`:
+Craft starts a language server for each language you open files in, using the
+first of these it finds on the `PATH`:
 
 | Language               | Servers                                                  |
 | ---------------------- | -------------------------------------------------------- |
@@ -86,15 +86,14 @@ in, using the first of these it finds on the project's `PATH`:
 | HTML                   | `vscode-html-language-server`                            |
 | CSS                    | `vscode-css-language-server`                             |
 
-A file's server runs for the project the file belongs to: within the open
-folder, or else the file's repository, the outermost folder with a project file
-such as `Cargo.toml`, `go.mod` or `package.json`, or else that folder itself. A
-definition in a dependency opens with the server that found it.
+Servers run for the open folder, on its `PATH`: Craft's own, changed by the
+project's direnv environment if it has an `.envrc`, so servers can come from
+its development shell. If the `.envrc` is blocked, Craft says so: run
+`direnv allow`, then open a file to start its server.
 
-The project's `PATH` is Craft's own, changed by the project's direnv
-environment if it has an `.envrc`, so servers can come from its development
-shell. If the `.envrc` is blocked, Craft says so: run `direnv allow`, then open
-a file to start its server.
+A file opened on its own gets what its server offers without a folder, in
+Craft's own environment: most servers work file by file, but rust-analyzer and
+taplo need the folder.
 
 Errors, warnings and notes are underlined, and stay in place as you type.
 Hovering shows their messages and the server's description of what is under

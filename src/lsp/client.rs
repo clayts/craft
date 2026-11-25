@@ -51,7 +51,8 @@ pub(super) struct Client {
     /// Distinguishes the client's work in progress from other clients'.
     id: usize,
     server: &'static Server,
-    root: gio::File,
+    /// The project folder, if the server is for one.
+    root: Option<gio::File>,
     report: Report,
     progress: Rc<Progress>,
     /// The server's command line and environment, once found.
@@ -146,12 +147,12 @@ enum Body<T> {
 }
 
 impl Client {
-    /// Starts `server` for the project at `root`, in the project's
-    /// `environment` once it is loaded, telling `report` of failures and
-    /// `progress` of the server's work.
+    /// Starts `server` for the project folder `root`, or for files on their
+    /// own, in `environment` once it is loaded, telling `report` of failures
+    /// and `progress` of the server's work.
     pub(super) fn start(
         server: &'static Server,
-        root: &gio::File,
+        root: Option<&gio::File>,
         environment: SharedEnvironment,
         report: Report,
         progress: Rc<Progress>,
@@ -160,7 +161,7 @@ impl Client {
         let client = Rc::new(Self {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             server,
-            root: root.clone(),
+            root: root.cloned(),
             report,
             progress,
             launch: RefCell::default(),
@@ -195,15 +196,6 @@ impl Client {
             .borrow()
             .as_ref()
             .map_or(self.server.commands[0][0], |launch| launch.command[0])
-    }
-
-    /// The root folder of the project the server is for.
-    pub(super) fn root(&self) -> &gio::File {
-        &self.root
-    }
-
-    pub(super) fn has_documents(&self) -> bool {
-        !self.documents.borrow().is_empty()
     }
 
     pub(super) fn is_stopped(&self) -> bool {
@@ -271,7 +263,7 @@ impl Client {
             launch.environment.apply(&mut command);
             command
         };
-        if let Some(path) = self.root.path() {
+        if let Some(path) = self.root.as_ref().and_then(gio::File::path) {
             command.current_dir(path);
         }
         let mut child = command.spawn()?;
@@ -368,8 +360,8 @@ impl Client {
         };
         InitializeParams {
             process_id: Some(std::process::id()),
-            root_uri: Some(folder.uri.clone()),
-            workspace_folders: Some(vec![folder]),
+            root_uri: folder.as_ref().map(|folder| folder.uri.clone()),
+            workspace_folders: folder.map(|folder| vec![folder]),
             capabilities: ClientCapabilities {
                 general: Some(GeneralClientCapabilities {
                     position_encodings: Some(vec![
@@ -398,11 +390,11 @@ impl Client {
         }
     }
 
-    fn workspace_folder(&self) -> WorkspaceFolder {
-        WorkspaceFolder {
-            uri: self.root.uri().parse().expect("GIO produces valid URIs"),
-            name: display_name(&self.root),
-        }
+    fn workspace_folder(&self) -> Option<WorkspaceFolder> {
+        self.root.as_ref().map(|root| WorkspaceFolder {
+            uri: root.uri().parse().expect("GIO produces valid URIs"),
+            name: display_name(root),
+        })
     }
 
     /// Sends a request and waits for its response. Dropping the future
@@ -479,7 +471,8 @@ impl Client {
                 self.send(id, None, Body::Result(vec![(); items]));
             }
             request::WorkspaceFoldersRequest::METHOD => {
-                self.send(id, None, Body::Result([self.workspace_folder()]));
+                let folders = self.workspace_folder().map(|folder| [folder]);
+                self.send(id, None, Body::Result(folders));
             }
             // Accepted, though nothing comes of them.
             request::WorkDoneProgressCreate::METHOD
