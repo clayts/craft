@@ -315,7 +315,7 @@ impl Client {
                 self.state
                     .replace(State::Running(Box::new(result.capabilities)));
                 if let Some(launch) = &*self.launch.borrow() {
-                    let started = format!("Started {}", launch.program.display());
+                    let started = format!("Started\n\n{}", launch.program.display());
                     self.status.started(self.name(), &started);
                 }
                 for document in self.documents() {

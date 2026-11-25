@@ -20,6 +20,10 @@ const LINGER: Duration = Duration::from_millis(500);
 /// How many entries each tool's log keeps, dropping the oldest.
 const LOG_LENGTH: usize = 100;
 
+/// The popover's width, which stays put as its pages and what they show
+/// change.
+const WIDTH: i32 = 400;
+
 /// Stands for the client of work that is not a server's.
 const NO_CLIENT: usize = usize::MAX;
 
@@ -93,6 +97,9 @@ struct LogPage {
     /// The tool's work under way, a line each.
     work: gtk::Label,
     entries: gtk::Box,
+    scroller: gtk::ScrolledWindow,
+    /// Shown while the tool has neither work nor a log to show.
+    quiet: gtk::Label,
 }
 
 /// A tick, a spinner or a warning sign, showing a state.
@@ -112,12 +119,13 @@ impl Status {
     pub fn new() -> Rc<Self> {
         let list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
-            .css_classes(["boxed-list"])
+            .css_classes(["navigation-sidebar"])
             .build();
 
         let pages = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::SlideLeftRight)
             .vhomogeneous(false)
+            .width_request(WIDTH)
             .build();
         let page = LogPage::new();
         pages.add_named(&list, Some("tools"));
@@ -125,8 +133,8 @@ impl Status {
         let popover = gtk::Popover::builder()
             .child(
                 &adw::Clamp::builder()
-                    .maximum_size(420)
-                    .tightening_threshold(420)
+                    .maximum_size(WIDTH)
+                    .tightening_threshold(WIDTH)
                     .child(&pages)
                     .build(),
             )
@@ -388,13 +396,13 @@ impl Status {
         let tool = &tools[index];
         self.shown.set(Some(index));
         self.page.title.set_text(&tool.name);
-        self.show_work(tool);
         while let Some(entry) = self.page.entries.first_child() {
             self.page.entries.remove(&entry);
         }
         for entry in &tool.log {
             self.page.entries.append(&entry.widget());
         }
+        self.show_work(tool);
         self.pages.set_visible_child_name("log");
         // Rather than an entry, which would select all it says.
         self.page.back.grab_focus();
@@ -422,10 +430,16 @@ impl Status {
         self.refresh(index);
     }
 
+    /// Shows the work of `tool`, whose log shows, or that it has nothing to
+    /// show.
     fn show_work(&self, tool: &Tool) {
         let details: Vec<String> = tool.works.iter().map(Work::details).collect();
         self.page.work.set_text(&details.join("\n"));
         self.page.work.set_visible(!details.is_empty());
+        self.page.scroller.set_visible(!tool.log.is_empty());
+        self.page
+            .quiet
+            .set_visible(details.is_empty() && tool.log.is_empty());
     }
 
     /// Ends the work that `busy` stood for.
@@ -468,20 +482,24 @@ impl LogPage {
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
             .build();
+        let scroller = gtk::ScrolledWindow::builder()
+            .child(&entries)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_height(true)
+            .max_content_height(400)
+            .build();
+        let quiet = gtk::Label::builder()
+            .label("Nothing to show")
+            .css_classes(["dim-label"])
+            .build();
         let root = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
             .build();
         root.append(&header);
         root.append(&work);
-        root.append(
-            &gtk::ScrolledWindow::builder()
-                .child(&entries)
-                .hscrollbar_policy(gtk::PolicyType::Never)
-                .propagate_natural_height(true)
-                .max_content_height(400)
-                .build(),
-        );
+        root.append(&scroller);
+        root.append(&quiet);
         Self {
             root,
             back,
@@ -489,6 +507,8 @@ impl LogPage {
             clear,
             work,
             entries,
+            scroller,
+            quiet,
         }
     }
 }
