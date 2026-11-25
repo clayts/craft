@@ -8,8 +8,7 @@ mod document;
 mod environment;
 mod hover;
 mod position;
-mod problems;
-mod progress;
+mod status;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -25,8 +24,7 @@ pub use document::Document;
 use environment::Environment;
 pub use position::Encoding;
 use position::Shift;
-use problems::Problems;
-use progress::Progress;
+use status::{Level, Status};
 
 use crate::editor::Editor;
 
@@ -134,40 +132,31 @@ pub struct Servers {
     clients: RefCell<HashMap<usize, Rc<Client>>>,
     /// The environment servers run in, once one needs it.
     environment: RefCell<Option<SharedEnvironment>>,
-    progress: Rc<Progress>,
-    problems: Rc<Problems>,
-    /// Shows what the servers are busy with, and what went wrong.
-    indicator: gtk::Box,
+    status: Rc<Status>,
 }
 
 impl Default for Servers {
     fn default() -> Self {
-        let (progress, problems) = (Progress::new(), Problems::new());
-        let indicator = gtk::Box::builder().spacing(6).build();
-        indicator.append(progress.widget());
-        indicator.append(problems.widget());
         Self {
             root: RefCell::default(),
             clients: RefCell::default(),
             environment: RefCell::default(),
-            progress,
-            problems,
-            indicator,
+            status: Status::new(),
         }
     }
 }
 
 impl Servers {
-    /// Shows what the servers are busy with, and what went wrong.
-    pub fn indicator(&self) -> &gtk::Box {
-        &self.indicator
+    /// Shows how the servers are, and what they and direnv said.
+    pub fn indicator(&self) -> &gtk::MenuButton {
+        self.status.widget()
     }
 
     /// Runs the servers for the project folder `root`, which the window now
     /// shows, connecting `editors` to them.
     pub fn set_root(&self, root: &gio::File, editors: impl IntoIterator<Item = Editor>) {
         self.shutdown();
-        self.problems.clear();
+        self.status.clear();
         self.root.replace(Some(root.clone()));
         for editor in editors {
             self.attach(&editor);
@@ -199,13 +188,7 @@ impl Servers {
             {
                 return;
             }
-            let client = Client::start(
-                server,
-                root.as_ref(),
-                environment,
-                Rc::clone(&self.problems),
-                Rc::clone(&self.progress),
-            );
+            let client = Client::start(server, root.as_ref(), environment, Rc::clone(&self.status));
             let stopped = self.clients.borrow_mut().insert(index, Rc::clone(&client));
             // The new server takes over the stopped one's files.
             for document in stopped.iter().flat_map(|stopped| stopped.documents()) {
@@ -229,15 +212,21 @@ impl Servers {
         {
             return environment.clone();
         }
-        let (root, problems) = (self.root.borrow().clone(), Rc::clone(&self.problems));
+        let (root, status) = (self.root.borrow().clone(), Rc::clone(&self.status));
         let environment = async move {
             let Some(root) = root else {
                 return Rc::new(Environment::default());
             };
-            Rc::new(Environment::load(&root).await.unwrap_or_else(|message| {
-                problems.report("direnv", &message);
-                Environment::failed()
-            }))
+            Rc::new(match Environment::load(&root).await {
+                Ok((environment, said)) => {
+                    status.log(Level::Info, "direnv", &said);
+                    environment
+                }
+                Err(message) => {
+                    status.log(Level::Error, "direnv", &message);
+                    Environment::failed()
+                }
+            })
         }
         .boxed_local()
         .shared();

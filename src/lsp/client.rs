@@ -8,6 +8,7 @@ use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::rc::{Rc, Weak};
@@ -36,8 +37,7 @@ use serde_json::value::RawValue;
 
 use super::document::Document;
 use super::environment::Environment;
-use super::problems::Problems;
-use super::progress::Progress;
+use super::status::{Level, Status};
 use super::{Encoding, Server, SharedEnvironment};
 use crate::display_name;
 
@@ -54,8 +54,7 @@ pub(super) struct Client {
     server: &'static Server,
     /// The project folder, if the server is for one.
     root: Option<gio::File>,
-    problems: Rc<Problems>,
-    progress: Rc<Progress>,
+    status: Rc<Status>,
     /// The server's command line and environment, once found.
     launch: RefCell<Option<Launch>>,
     state: RefCell<State>,
@@ -149,22 +148,20 @@ enum Body<T> {
 
 impl Client {
     /// Starts `server` for the project folder `root`, or for files on their
-    /// own, in `environment` once it is loaded, telling `problems` of what
-    /// goes wrong and `progress` of the server's work.
+    /// own, in `environment` once it is loaded, telling `status` of what
+    /// becomes of it, what it says, and its work.
     pub(super) fn start(
         server: &'static Server,
         root: Option<&gio::File>,
         environment: SharedEnvironment,
-        problems: Rc<Problems>,
-        progress: Rc<Progress>,
+        status: Rc<Status>,
     ) -> Rc<Self> {
         static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
         let client = Rc::new(Self {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             server,
             root: root.cloned(),
-            problems,
-            progress,
+            status,
             launch: RefCell::default(),
             state: RefCell::new(State::Starting),
             connection: RefCell::default(),
@@ -243,8 +240,11 @@ impl Client {
     /// Starts the server process and initializes it, or reports why not.
     fn connect(self: &Rc<Self>) {
         if let Err(err) = self.spawn() {
-            self.problems
-                .report(self.name(), &format!("Could not start: {err}"));
+            self.status.log(
+                Level::Error,
+                self.name(),
+                &format!("Could not start: {err}"),
+            );
             self.state.replace(State::Stopped);
             return;
         }
@@ -315,14 +315,18 @@ impl Client {
                 self.notify::<notification::Initialized>(lsp_types::InitializedParams {});
                 self.state
                     .replace(State::Running(Box::new(result.capabilities)));
+                if let Some(launch) = &*self.launch.borrow() {
+                    let started = format!("Started {}", launch.program.display());
+                    self.status.log(Level::Info, self.name(), &started);
+                }
                 for document in self.documents() {
                     document.open();
                 }
             }
             Err(Error::Disconnected) => {}
             Err(err) => {
-                self.problems
-                    .report(self.name(), &format!("Failed to start: {err}"));
+                let failed = format!("Failed to start: {err}");
+                self.status.log(Level::Error, self.name(), &failed);
                 self.stop();
             }
         }
@@ -509,18 +513,18 @@ impl Client {
                     self.publish(params);
                 }
             }
-            // Errors such as failing to load the project, which leave the
-            // server running but of little use.
-            notification::ShowMessage::METHOD => {
+            // Both carry a type and a message, such as failing to load the
+            // project, which leaves the server running but of little use.
+            notification::ShowMessage::METHOD | notification::LogMessage::METHOD => {
                 if let Some(params) = parse::<ShowMessageParams>(params)
-                    && params.typ == MessageType::ERROR
+                    && let Some(level) = level(params.typ)
                 {
-                    self.problems.report(self.name(), &params.message);
+                    self.status.log(level, self.name(), &params.message);
                 }
             }
             notification::Progress::METHOD => {
                 if let Some(params) = parse(params) {
-                    self.progress.update(self.id, self.name(), params);
+                    self.status.update(self.id, self.name(), params);
                 }
             }
             _ => {}
@@ -548,10 +552,12 @@ impl Client {
             return;
         }
         if started.is_some_and(|started| started.elapsed() >= MIN_UPTIME_FOR_RESTART) {
-            eprintln!("craft: {} stopped unexpectedly; restarting it", self.name());
+            let restarting = "Stopped unexpectedly; restarting it";
+            self.status.log(Level::Warning, self.name(), restarting);
             self.connect();
         } else {
-            self.problems.report(self.name(), "Stopped unexpectedly");
+            self.status
+                .log(Level::Error, self.name(), "Stopped unexpectedly");
             self.state.replace(State::Stopped);
         }
     }
@@ -570,7 +576,7 @@ impl Client {
         for document in self.documents() {
             document.closed();
         }
-        self.progress.clear(self.id);
+        self.status.forget(self.id);
         started
     }
 
@@ -625,11 +631,23 @@ impl Drop for Pending<'_> {
     }
 }
 
-/// A folder of Craft's own for servers to run in, holding no project.
+/// A folder of Craft's own for servers to run in, holding no project: empty,
+/// and kept so, being read-only.
 fn empty_dir() -> io::Result<PathBuf> {
     let dir = glib::user_runtime_dir().join("craft");
     std::fs::create_dir_all(&dir)?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500))?;
     Ok(dir)
+}
+
+/// How much a server's message matters, if it is worth logging at all.
+fn level(typ: MessageType) -> Option<Level> {
+    match typ {
+        MessageType::ERROR => Some(Level::Error),
+        MessageType::WARNING => Some(Level::Warning),
+        MessageType::INFO => Some(Level::Info),
+        _ => None,
+    }
 }
 
 fn parse<T: DeserializeOwned>(params: Option<&RawValue>) -> Option<T> {

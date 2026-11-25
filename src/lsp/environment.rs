@@ -23,11 +23,12 @@ pub struct Environment {
 }
 
 impl Environment {
-    /// The environment of the project at `root`. Without direnv or an
-    /// `.envrc`, that is Craft's own. Errors describe why direnv failed.
-    pub async fn load(root: &gio::File) -> Result<Self, String> {
+    /// The environment of the project at `root`, with what direnv said of
+    /// it. Without direnv or an `.envrc`, that is Craft's own. Errors say why
+    /// direnv failed.
+    pub async fn load(root: &gio::File) -> Result<(Self, String), String> {
         let (Some(dir), Some(_)) = (root.path(), glib::find_program_in_path("direnv")) else {
-            return Ok(Self::default());
+            return Ok((Self::default(), String::new()));
         };
         let name = display_name(root);
         let fail = |detail: &dyn Display| format!("Could not load {name}’s environment:\n{detail}");
@@ -41,15 +42,17 @@ impl Environment {
             .communicate_utf8_future(None)
             .await
             .map_err(|err| fail(&err))?;
+        let said = plain(stderr.as_deref().unwrap_or_default());
         if !process.is_successful() {
-            let stderr = stderr.unwrap_or_default();
-            return Err(if stderr.contains(" is blocked") {
+            return Err(if said.contains(" is blocked") {
                 format!("{name}’s .envrc is blocked; run “direnv allow” to use it")
             } else {
-                fail(&plain(&stderr))
+                fail(&said)
             });
         }
-        Self::parse(stdout.as_deref().unwrap_or_default()).map_err(|err| fail(&err))
+        let environment =
+            Self::parse(stdout.as_deref().unwrap_or_default()).map_err(|err| fail(&err))?;
+        Ok((environment, said))
     }
 
     /// Craft's own environment, standing in for one direnv failed to give.
