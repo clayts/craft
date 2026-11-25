@@ -12,7 +12,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::rc::{Rc, Weak};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -26,10 +25,10 @@ use lsp_types::{
     ClientCapabilities, ClientInfo, CompletionClientCapabilities, CompletionItemCapability,
     CompletionItemCapabilityResolveSupport, ConfigurationParams, GeneralClientCapabilities,
     GotoCapability, HoverClientCapabilities, InitializeParams, MarkupKind, MessageType,
-    NumberOrString, PositionEncodingKind, PublishDiagnosticsClientCapabilities,
-    PublishDiagnosticsParams, ServerCapabilities, ShowMessageParams,
-    TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities, Uri,
-    WindowClientCapabilities, WorkspaceClientCapabilities, WorkspaceFolder,
+    NumberOrString, PositionEncodingKind, ProgressParams, ProgressParamsValue,
+    PublishDiagnosticsClientCapabilities, PublishDiagnosticsParams, ServerCapabilities,
+    ShowMessageParams, TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities, Uri,
+    WindowClientCapabilities, WorkDoneProgress, WorkspaceClientCapabilities, WorkspaceFolder,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -37,7 +36,7 @@ use serde_json::value::RawValue;
 
 use super::document::Document;
 use super::environment::Environment;
-use super::status::{Level, Status};
+use super::status::{Busy, Level, Status};
 use super::{Encoding, Server, SharedEnvironment};
 use crate::display_name;
 
@@ -49,8 +48,6 @@ const MIN_UPTIME_FOR_RESTART: Duration = Duration::from_secs(30);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
 pub(super) struct Client {
-    /// Distinguishes the client's work in progress from other clients'.
-    id: usize,
     server: &'static Server,
     /// The project folder, if the server is for one.
     root: Option<gio::File>,
@@ -61,6 +58,8 @@ pub(super) struct Client {
     connection: RefCell<Option<Connection>>,
     /// Open documents by URI, which the server's notifications refer to.
     documents: RefCell<HashMap<String, Weak<Document>>>,
+    /// The server's work in progress, by its token, showing in the status.
+    works: RefCell<HashMap<NumberOrString, Busy>>,
 }
 
 struct Launch {
@@ -156,9 +155,7 @@ impl Client {
         environment: SharedEnvironment,
         status: Rc<Status>,
     ) -> Rc<Self> {
-        static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
         let client = Rc::new(Self {
-            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             server,
             root: root.cloned(),
             status,
@@ -166,6 +163,7 @@ impl Client {
             state: RefCell::new(State::Starting),
             connection: RefCell::default(),
             documents: RefCell::default(),
+            works: RefCell::default(),
         });
         glib::spawn_future_local(Rc::clone(&client).launch(environment));
         client
@@ -523,10 +521,31 @@ impl Client {
             }
             notification::Progress::METHOD => {
                 if let Some(params) = parse(params) {
-                    self.status.update(self.id, self.name(), params);
+                    self.progress(params);
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Follows the server's report on its work.
+    fn progress(&self, params: ProgressParams) {
+        let ProgressParamsValue::WorkDone(progress) = params.value;
+        let mut works = self.works.borrow_mut();
+        match progress {
+            WorkDoneProgress::Begin(begin) => {
+                let work = self.status.busy(self.name(), &begin.title);
+                work.report(begin.message, begin.percentage);
+                works.insert(params.token, work);
+            }
+            WorkDoneProgress::Report(report) => {
+                if let Some(work) = works.get(&params.token) {
+                    work.report(report.message, report.percentage);
+                }
+            }
+            WorkDoneProgress::End(_) => {
+                works.remove(&params.token);
+            }
         }
     }
 
@@ -575,7 +594,7 @@ impl Client {
         for document in self.documents() {
             document.closed();
         }
-        self.status.forget(self.id);
+        self.works.take();
         started
     }
 

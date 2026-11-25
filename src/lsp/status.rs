@@ -5,27 +5,22 @@
 //! from which each tool's log opens.
 
 use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
 use adw::prelude::*;
-use gtk::{glib, pango};
-use lsp_types::{NumberOrString, ProgressParams, ProgressParamsValue, WorkDoneProgress};
+use gtk::{gio, glib, pango};
 
 /// How long a tool stays busy after its last work ends, in case more begins,
 /// as it does between the stages of a server's start.
 const LINGER: Duration = Duration::from_millis(500);
 
 /// How many entries each tool's log keeps, dropping the oldest.
-const LOG_LENGTH: usize = 100;
+const LOG_LENGTH: u32 = 100;
 
 /// The popover's width, which stays put as its pages and what they show
 /// change.
 const WIDTH: i32 = 400;
-
-/// Stands for the client of work that is not a server's.
-const NO_CLIENT: usize = usize::MAX;
 
 /// How much an entry in a log matters.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -53,8 +48,8 @@ pub struct Status {
     tools: RefCell<Vec<Tool>>,
     /// The tool whose log shows, by index.
     shown: Cell<Option<usize>>,
-    /// Numbers the work that is not a server's.
-    next_token: Cell<i32>,
+    /// Numbers work, so that each [`Busy`] knows its own.
+    next_work: Cell<u64>,
 }
 
 struct Tool {
@@ -63,19 +58,18 @@ struct Tool {
     icon: Icon,
     /// Work under way, in the order it began.
     works: Vec<Work>,
-    /// Whether the tool shows as busy, which it goes on doing for a moment
-    /// after its work ends.
-    busy: bool,
+    /// Pending while the tool stays busy for a moment after its work ends.
+    linger: Option<glib::SourceId>,
     /// Whether an error has been logged since the tool last started afresh,
     /// or its log was cleared.
     failed: bool,
-    log: VecDeque<Entry>,
+    /// What the tool said, as [`Entry`]s, oldest first.
+    log: gio::ListStore,
 }
 
 /// Work that a tool reports progress on.
 struct Work {
-    client: usize,
-    token: NumberOrString,
+    id: u64,
     title: String,
     message: Option<String>,
     percentage: Option<u32>,
@@ -96,7 +90,8 @@ struct LogPage {
     clear: gtk::Button,
     /// The tool's work under way, a line each.
     work: gtk::Label,
-    entries: gtk::Box,
+    /// Bound to the log that shows.
+    entries: gtk::ListBox,
     scroller: gtk::ScrolledWindow,
     /// Shown while the tool has neither work nor a log to show.
     quiet: gtk::Label,
@@ -112,7 +107,7 @@ struct Icon {
 pub struct Busy {
     status: Weak<Status>,
     tool: usize,
-    token: NumberOrString,
+    work: u64,
 }
 
 impl Status {
@@ -155,7 +150,7 @@ impl Status {
             page,
             tools: RefCell::default(),
             shown: Cell::new(None),
-            next_token: Cell::new(0),
+            next_work: Cell::new(0),
         });
         let weak = Rc::downgrade(&status);
         status.list.connect_row_activated(glib::clone!(
@@ -210,23 +205,16 @@ impl Status {
             let tool = &mut tools[index];
             tool.failed |= level == Level::Error;
             // A repeat shows once.
-            let repeat = tool
-                .log
-                .back()
-                .is_some_and(|last| last.level == level && last.message == message);
+            let repeat = tool.last().is_some_and(|last| {
+                let last = last.borrow::<Entry>();
+                last.level == level && last.message == message
+            });
             if !repeat {
-                let shown = self.shown.get() == Some(index);
-                if tool.log.len() == LOG_LENGTH {
-                    tool.log.pop_front();
-                    if let Some(oldest) = self.page.entries.first_child().filter(|_| shown) {
-                        self.page.entries.remove(&oldest);
-                    }
+                if tool.log.n_items() == LOG_LENGTH {
+                    tool.log.remove(0);
                 }
                 let entry = Entry::new(level, message);
-                if shown {
-                    self.page.entries.append(&entry.widget());
-                }
-                tool.log.push_back(entry);
+                tool.log.append(&glib::BoxedAnyObject::new(entry));
             }
         }
         self.refresh(index);
@@ -246,72 +234,26 @@ impl Status {
     /// Shows `tool` as busy with `title` while the result lives.
     pub fn busy(self: &Rc<Self>, tool: &str, title: &str) -> Busy {
         let index = self.tool(tool);
-        let token = NumberOrString::Number(self.next_token.get());
-        self.next_token.set(self.next_token.get().wrapping_add(1));
-        self.tools.borrow_mut()[index].works.push(Work {
-            client: NO_CLIENT,
-            token: token.clone(),
-            title: title.to_owned(),
-            message: None,
-            percentage: None,
-        });
-        self.settle(index);
+        let work = self.next_work.get();
+        self.next_work.set(work + 1);
+        {
+            let mut tools = self.tools.borrow_mut();
+            let tool = &mut tools[index];
+            if let Some(linger) = tool.linger.take() {
+                linger.remove();
+            }
+            tool.works.push(Work {
+                id: work,
+                title: title.to_owned(),
+                message: None,
+                percentage: None,
+            });
+        }
+        self.refresh(index);
         Busy {
             status: Rc::downgrade(self),
             tool: index,
-            token,
-        }
-    }
-
-    /// Follows the progress that `tool`, run by the client numbered `client`,
-    /// reports in `params`.
-    pub fn update(self: &Rc<Self>, client: usize, tool: &str, params: ProgressParams) {
-        let ProgressParamsValue::WorkDone(progress) = params.value;
-        let index = self.tool(tool);
-        {
-            let mut tools = self.tools.borrow_mut();
-            let works = &mut tools[index].works;
-            let position = works
-                .iter()
-                .position(|work| work.client == client && work.token == params.token);
-            match (progress, position) {
-                (WorkDoneProgress::Begin(begin), _) => works.push(Work {
-                    client,
-                    token: params.token,
-                    title: begin.title,
-                    message: begin.message,
-                    percentage: begin.percentage,
-                }),
-                (WorkDoneProgress::Report(report), Some(position)) => {
-                    let work = &mut works[position];
-                    work.message = report.message.or(work.message.take());
-                    work.percentage = report.percentage.or(work.percentage);
-                }
-                (WorkDoneProgress::End(_), Some(position)) => {
-                    works.remove(position);
-                }
-                _ => return,
-            }
-        }
-        self.settle(index);
-    }
-
-    /// Forgets the work of the client numbered `client`, whose server
-    /// stopped.
-    pub fn forget(self: &Rc<Self>, client: usize) {
-        let ended: Vec<usize> = self
-            .tools
-            .borrow_mut()
-            .iter_mut()
-            .enumerate()
-            .filter_map(|(index, tool)| {
-                let before = tool.works.len();
-                tool.works.retain(|work| work.client != client);
-                (tool.works.len() < before).then_some(index)
-            })
-            .collect();
-        for index in ended {
-            self.settle(index);
+            work,
         }
     }
 
@@ -342,38 +284,11 @@ impl Status {
             row,
             icon,
             works: Vec::new(),
-            busy: false,
+            linger: None,
             failed: false,
-            log: VecDeque::new(),
+            log: gio::ListStore::new::<glib::BoxedAnyObject>(),
         });
         tools.len() - 1
-    }
-
-    /// Shows the tool numbered `index` as busy while it has work, and for a
-    /// moment after, in case more follows.
-    fn settle(self: &Rc<Self>, index: usize) {
-        {
-            let mut tools = self.tools.borrow_mut();
-            let tool = &mut tools[index];
-            if !tool.works.is_empty() {
-                tool.busy = true;
-            } else if tool.busy {
-                let this = Rc::downgrade(self);
-                glib::timeout_add_local_once(LINGER, move || {
-                    let Some(this) = this.upgrade() else {
-                        return;
-                    };
-                    let mut tools = this.tools.borrow_mut();
-                    let tool = &mut tools[index];
-                    if tool.works.is_empty() {
-                        tool.busy = false;
-                        drop(tools);
-                        this.refresh(index);
-                    }
-                });
-            }
-        }
-        self.refresh(index);
     }
 
     /// Shows how the tool numbered `index` is, on its row, its log if it
@@ -396,12 +311,11 @@ impl Status {
         let tool = &tools[index];
         self.shown.set(Some(index));
         self.page.title.set_text(&tool.name);
-        while let Some(entry) = self.page.entries.first_child() {
-            self.page.entries.remove(&entry);
-        }
-        for entry in &tool.log {
-            self.page.entries.append(&entry.widget());
-        }
+        self.page.entries.bind_model(Some(&tool.log), |item| {
+            let entry = item.downcast_ref::<glib::BoxedAnyObject>();
+            let entry = entry.expect("logs hold entries").borrow::<Entry>();
+            entry.widget().upcast()
+        });
         self.show_work(tool);
         self.pages.set_visible_child_name("log");
         // Rather than an entry, which would select all it says.
@@ -421,11 +335,8 @@ impl Status {
         };
         {
             let mut tools = self.tools.borrow_mut();
-            tools[index].log.clear();
+            tools[index].log.remove_all();
             tools[index].failed = false;
-        }
-        while let Some(entry) = self.page.entries.first_child() {
-            self.page.entries.remove(&entry);
         }
         self.refresh(index);
     }
@@ -434,20 +345,34 @@ impl Status {
     /// show.
     fn show_work(&self, tool: &Tool) {
         let details: Vec<String> = tool.works.iter().map(Work::details).collect();
+        let said = tool.log.n_items() > 0;
         self.page.work.set_text(&details.join("\n"));
         self.page.work.set_visible(!details.is_empty());
-        self.page.scroller.set_visible(!tool.log.is_empty());
-        self.page
-            .quiet
-            .set_visible(details.is_empty() && tool.log.is_empty());
+        self.page.scroller.set_visible(said);
+        self.page.quiet.set_visible(details.is_empty() && !said);
     }
 
-    /// Ends the work that `busy` stood for.
+    /// Ends the work that `busy` stood for, the tool staying busy a moment
+    /// longer if that was the last of its work.
     fn end(self: &Rc<Self>, busy: &Busy) {
-        self.tools.borrow_mut()[busy.tool]
-            .works
-            .retain(|work| work.client != NO_CLIENT || work.token != busy.token);
-        self.settle(busy.tool);
+        {
+            let mut tools = self.tools.borrow_mut();
+            let tool = &mut tools[busy.tool];
+            tool.works.retain(|work| work.id != busy.work);
+            if tool.works.is_empty() {
+                let (status, index) = (Rc::downgrade(self), busy.tool);
+                let linger = glib::timeout_add_local_once(LINGER, move || {
+                    if let Some(status) = status.upgrade() {
+                        status.tools.borrow_mut()[index].linger = None;
+                        status.refresh(index);
+                    }
+                });
+                if let Some(earlier) = tool.linger.replace(linger) {
+                    earlier.remove();
+                }
+            }
+        }
+        self.refresh(busy.tool);
     }
 }
 
@@ -478,9 +403,9 @@ impl LogPage {
             .wrap_mode(pango::WrapMode::WordChar)
             .css_classes(["dim-label"])
             .build();
-        let entries = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(12)
+        let entries = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(["navigation-sidebar"])
             .build();
         let scroller = gtk::ScrolledWindow::builder()
             .child(&entries)
@@ -513,6 +438,25 @@ impl LogPage {
     }
 }
 
+impl Busy {
+    /// Updates what the work says of itself and how far along it is, where
+    /// given.
+    pub fn report(&self, message: Option<String>, percentage: Option<u32>) {
+        let Some(status) = self.status.upgrade() else {
+            return;
+        };
+        if let Some(work) = status.tools.borrow_mut()[self.tool]
+            .works
+            .iter_mut()
+            .find(|work| work.id == self.work)
+        {
+            work.message = message.or(work.message.take());
+            work.percentage = percentage.or(work.percentage);
+        }
+        status.refresh(self.tool);
+    }
+}
+
 impl Drop for Busy {
     fn drop(&mut self) {
         if let Some(status) = self.status.upgrade() {
@@ -525,7 +469,7 @@ impl Tool {
     fn state(&self) -> State {
         if self.failed {
             State::Failed
-        } else if self.busy {
+        } else if !self.works.is_empty() || self.linger.is_some() {
             State::Busy
         } else {
             State::Idle
@@ -537,11 +481,19 @@ impl Tool {
         if let Some(work) = self.works.first() {
             return work.summary();
         }
-        self.log
-            .back()
-            .and_then(|entry| entry.message.lines().next())
+        self.last()
+            .and_then(|last| {
+                let last = last.borrow::<Entry>();
+                last.message.lines().next().map(str::to_owned)
+            })
             .unwrap_or_default()
-            .to_owned()
+    }
+
+    /// The latest entry in the tool's log.
+    fn last(&self) -> Option<glib::BoxedAnyObject> {
+        self.log
+            .item(self.log.n_items().checked_sub(1)?)
+            .and_downcast()
     }
 }
 
@@ -578,7 +530,7 @@ impl Entry {
 
     /// The entry as shown: its time, how much it matters if much, and what it
     /// says.
-    fn widget(&self) -> gtk::Box {
+    fn widget(&self) -> gtk::ListBoxRow {
         let heading = gtk::Box::builder().spacing(6).build();
         heading.append(
             &gtk::Label::builder()
@@ -599,9 +551,12 @@ impl Entry {
                     .build(),
             );
         }
+        // With its row's margin, as far apart as the page's parts.
         let entry = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(2)
+            .margin_top(5)
+            .margin_bottom(5)
             .build();
         entry.append(&heading);
         entry.append(
@@ -614,7 +569,10 @@ impl Entry {
                 .selectable(true)
                 .build(),
         );
-        entry
+        gtk::ListBoxRow::builder()
+            .child(&entry)
+            .activatable(false)
+            .build()
     }
 }
 
