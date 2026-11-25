@@ -157,8 +157,9 @@ impl Provider {
                 // The character just typed, if the server takes it to start
                 // completion.
                 let mut previous = cursor;
-                let trigger = previous
-                    .backward_char()
+                let typed = context.activation() == sourceview::CompletionActivation::Interactive
+                    && previous.backward_char();
+                let trigger = typed
                     .then(|| previous.char())
                     .filter(|&c| document.is_completion_trigger(c));
                 document.complete(&cursor, trigger_context(trigger))
@@ -279,7 +280,7 @@ impl Provider {
         }
         // The server has yet to answer: insert the item once it has, in place
         // of the word, keeping text typed after it meanwhile.
-        let buffer = document.buffer();
+        let buffer = document.buffer().clone();
         let word = (
             buffer.create_mark(None, &bounds.0, true),
             buffer.create_mark(None, &bounds.1, true),
@@ -287,11 +288,10 @@ impl Provider {
         let (document, item) = (Rc::downgrade(&document), item.clone());
         glib::spawn_future_local(async move {
             let resolved = resolution.await;
+            let bounds = (buffer.iter_at_mark(&word.0), buffer.iter_at_mark(&word.1));
+            buffer.delete_mark(&word.0);
+            buffer.delete_mark(&word.1);
             if let Some(document) = document.upgrade() {
-                let buffer = document.buffer();
-                let bounds = (buffer.iter_at_mark(&word.0), buffer.iter_at_mark(&word.1));
-                buffer.delete_mark(&word.0);
-                buffer.delete_mark(&word.1);
                 insert(&document, resolved.as_deref().unwrap_or(&item), bounds);
             }
         });

@@ -1,12 +1,11 @@
 //! An open document: a file and the source view editing it.
 
 use std::borrow::Cow;
-use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
-use gtk::{gdk, gio, glib};
+use gtk::{gio, glib};
 use sourceview::prelude::*;
 
 use crate::display_name;
@@ -105,7 +104,6 @@ mod imp {
             let completion = view.completion();
             completion.set_show_icons(false);
             completion.set_select_on_show(true);
-            super::present_popovers(view);
             obj.set_child(Some(&gtk::ScrolledWindow::builder().child(view).build()));
         }
 
@@ -309,45 +307,6 @@ impl Editor {
         dialog.set_close_response("cancel");
         dialog.choose_future(Some(self)).await == "overwrite"
     }
-}
-
-/// Presents the popovers of `view`, such as completion's, after each frame's
-/// updates, before anything is laid out. `GtkSourceView` presents them only as
-/// it lays itself out, which on X11 is too late for content that changed
-/// meanwhile, as when completions arrive from a server: a popover would keep
-/// the size of what it showed before, or close if that is too small.
-fn present_popovers(view: &sourceview::View) {
-    let watch: Rc<RefCell<Option<(gdk::FrameClock, glib::SignalHandlerId)>>> = Rc::default();
-    view.connect_realize(glib::clone!(
-        #[strong]
-        watch,
-        move |view| {
-            let Some(clock) = view.frame_clock() else {
-                return;
-            };
-            let view = view.downgrade();
-            let handler = clock.connect_local("update", true, move |_| {
-                let mut child = view.upgrade()?.first_child();
-                while let Some(widget) = child {
-                    if let Some(popover) = widget.downcast_ref::<gtk::Popover>()
-                        && popover.is_visible()
-                        && popover.surface().is_some()
-                    {
-                        // Only if their content changed.
-                        popover.present();
-                    }
-                    child = widget.next_sibling();
-                }
-                None
-            });
-            watch.replace(Some((clock, handler)));
-        }
-    ));
-    view.connect_unrealize(move |_| {
-        if let Some((clock, handler)) = watch.take() {
-            clock.disconnect(handler);
-        }
-    });
 }
 
 /// `text` with every line ended by `\r\n`, including lines pasted in with
