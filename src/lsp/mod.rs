@@ -248,25 +248,12 @@ impl Servers {
         {
             return environment.clone();
         }
-        let (root, status) = (self.root.borrow().clone(), Rc::clone(&self.status));
+        let dir = self.root.borrow().as_ref().and_then(FileExt::path);
+        let status = Rc::clone(&self.status);
         let environment = async move {
-            let Some(root) = root else {
-                return Rc::new(Environment::default());
-            };
-            let busy = (root.path())
-                .filter(|dir| dir.join(".envrc").exists())
-                .map(|_| status.busy("direnv", "Loading the environment"));
-            let loaded = Environment::load(&root).await;
-            drop(busy);
-            Rc::new(match loaded {
-                Ok((environment, said)) => {
-                    status.started("direnv", &said);
-                    environment
-                }
-                Err(message) => {
-                    status.log("direnv", Level::Error, &message);
-                    Environment::failed()
-                }
+            Rc::new(match dir {
+                Some(dir) => Environment::load(&dir, &status).await,
+                None => Environment::default(),
             })
         }
         .boxed_local()

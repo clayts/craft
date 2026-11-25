@@ -1,6 +1,6 @@
 //! The environment language servers run in: Craft's own, changed as direnv
-//! would change it for the project, so that servers come from the project's
-//! development shell where it has one.
+//! changes a shell's on entering the project folder, so that servers come
+//! from the project's development shell where it has one.
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -8,11 +8,20 @@ use std::fmt::Display;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::rc::Rc;
 
-use gtk::prelude::*;
 use gtk::{gio, glib};
+use serde::Deserialize;
 
-use crate::display_name;
+use super::status::{Level, Status};
+
+/// The program, which is also the tool's name.
+const DIRENV: &str = "direnv";
+
+/// How direnv regards an `.envrc`.
+const ALLOWED: u8 = 0;
+const BLOCKED: u8 = 1;
+const DENIED: u8 = 2;
 
 #[derive(Debug, Default, PartialEq)]
 pub struct Environment {
@@ -22,61 +31,77 @@ pub struct Environment {
     pub failed: bool,
 }
 
+/// The `.envrc` that direnv finds for a folder: the folder's own, or else
+/// its nearest parent's.
+#[derive(Deserialize)]
+struct Envrc {
+    path: PathBuf,
+    /// Whether it is allowed, blocked until allowed, or denied.
+    allowed: u8,
+}
+
 impl Environment {
-    /// The environment of the project at `root`, with what direnv said of
-    /// it, if anything. Without direnv or an `.envrc`, that is Craft's own.
-    /// Errors say why direnv failed, or why it could not run.
-    pub async fn load(root: &gio::File) -> Result<(Self, String), String> {
-        let Some(dir) = root.path() else {
-            return Ok((Self::default(), String::new()));
-        };
-        let name = display_name(root);
-        if glib::find_program_in_path("direnv").is_none() {
-            return if dir.join(".envrc").exists() {
-                Err(format!(
-                    "Not found on the PATH, so {name}’s .envrc goes unused"
-                ))
-            } else {
-                Ok((Self::default(), String::new()))
-            };
-        }
-        let fail =
-            |detail: &dyn Display| format!("Could not load {name}’s environment\n\n{detail}");
-        let launcher = gio::SubprocessLauncher::new(
-            gio::SubprocessFlags::STDOUT_PIPE | gio::SubprocessFlags::STDERR_PIPE,
-        );
-        launcher.set_cwd(&dir);
-        let argv = ["direnv", "export", "json"].map(OsStr::new);
-        let process = launcher.spawn(&argv).map_err(|err| fail(&err))?;
-        let (stdout, stderr) = process
-            .communicate_utf8_future(None)
-            .await
-            .map_err(|err| fail(&err))?;
-        let said = said(stderr.as_deref().unwrap_or_default());
-        if !process.is_successful() {
-            return Err(if said.contains(" is blocked") {
-                format!("{name}’s .envrc is blocked; run “direnv allow” to use it")
-            } else {
-                fail(&said)
-            });
-        }
-        let environment =
-            Self::parse(stdout.as_deref().unwrap_or_default()).map_err(|err| fail(&err))?;
-        // direnv says nothing without an `.envrc`.
-        let loaded = if said.is_empty() {
-            said
-        } else {
-            format!("Loaded {name}’s environment\n\n{said}")
-        };
-        Ok((environment, loaded))
+    /// The environment of the project folder `dir`, telling `status` how
+    /// loading it went. Where direnv cannot give it, that is Craft's own.
+    pub async fn load(dir: &Path, status: &Rc<Status>) -> Self {
+        Self::try_load(dir, status).await.unwrap_or_else(|message| {
+            status.log(DIRENV, Level::Error, &message);
+            Self {
+                failed: true,
+                ..Self::default()
+            }
+        })
     }
 
-    /// Craft's own environment, standing in for one direnv failed to give.
-    pub fn failed() -> Self {
-        Self {
-            failed: true,
-            ..Self::default()
+    /// As [`Self::load`], or why direnv cannot give the environment.
+    async fn try_load(dir: &Path, status: &Rc<Status>) -> Result<Self, String> {
+        if glib::find_program_in_path(DIRENV).is_none() {
+            // The `.envrc` that direnv would find.
+            let envrc = dir
+                .ancestors()
+                .map(|dir| dir.join(".envrc"))
+                .find(|envrc| envrc.exists());
+            return match envrc {
+                Some(envrc) => Err(format!(
+                    "Not found on the PATH, so {}’s .envrc goes unused",
+                    owner(&envrc)
+                )),
+                None => Ok(Self::default()),
+            };
         }
+        let fail = |name: &dyn Display, detail: &dyn Display| {
+            format!("Could not load {name}’s environment\n\n{detail}")
+        };
+        let envrc = Envrc::find(dir)
+            .await
+            .map_err(|err| fail(&glib::filename_display_basename(dir), &err))?;
+        let name = envrc.as_ref().map_or_else(
+            || glib::filename_display_basename(dir),
+            |envrc| owner(&envrc.path),
+        );
+        let allowed = envrc.map(|envrc| envrc.allowed);
+        if allowed == Some(BLOCKED) {
+            return Err(format!(
+                "{name}’s .envrc is blocked; run “direnv allow” to use it"
+            ));
+        }
+        let busy = (allowed == Some(ALLOWED))
+            .then(|| status.busy(DIRENV, &format!("Loading {name}’s environment")));
+        // Without an `.envrc` too, to undo that of any folder Craft was
+        // started in.
+        let (json, said) = run(dir, ["export", "json"])
+            .await
+            .map_err(|err| fail(&name, &err))?;
+        drop(busy);
+        let environment = Self::parse(&json).map_err(|err| fail(&name, &err))?;
+        // direnv says nothing of an environment already in effect.
+        let loaded = match allowed {
+            Some(ALLOWED) => format!("Loaded {name}’s environment\n\n{said}"),
+            Some(DENIED) => format!("{name}’s .envrc is denied; run “direnv allow” to use it"),
+            _ => String::new(),
+        };
+        status.started(DIRENV, &loaded);
+        Ok(environment)
     }
 
     /// Reads the output of `direnv export json`, which is empty when there is
@@ -123,6 +148,47 @@ impl Environment {
     }
 }
 
+impl Envrc {
+    /// The `.envrc` that direnv finds for `dir`, if any.
+    async fn find(dir: &Path) -> Result<Option<Self>, String> {
+        let (json, _) = run(dir, ["status", "--json"]).await?;
+        Self::parse(&json).map_err(|err| err.to_string())
+    }
+
+    /// Reads the output of `direnv status --json`.
+    fn parse(json: &str) -> serde_json::Result<Option<Self>> {
+        let status: serde_json::Value = serde_json::from_str(json)?;
+        Option::deserialize(&status["state"]["foundRC"])
+    }
+}
+
+/// Runs `direnv {command} {option}` in `dir`, for what it prints and, in
+/// plain text, what it says; or, if it fails, why.
+async fn run(dir: &Path, [command, option]: [&str; 2]) -> Result<(glib::GString, String), String> {
+    let launcher = gio::SubprocessLauncher::new(
+        gio::SubprocessFlags::STDOUT_PIPE | gio::SubprocessFlags::STDERR_PIPE,
+    );
+    launcher.set_cwd(dir);
+    let process = launcher
+        .spawn(&[DIRENV, command, option].map(OsStr::new))
+        .map_err(|err| err.to_string())?;
+    let (stdout, stderr) = process
+        .communicate_utf8_future(None)
+        .await
+        .map_err(|err| err.to_string())?;
+    let said = said(stderr.as_deref().unwrap_or_default());
+    if process.is_successful() {
+        Ok((stdout.unwrap_or_default(), said))
+    } else {
+        Err(said)
+    }
+}
+
+/// The name of the folder that `envrc` is in, whose environment it gives.
+fn owner(envrc: &Path) -> glib::GString {
+    glib::filename_display_basename(envrc.parent().unwrap_or(envrc))
+}
+
 /// What direnv said, in plain text, without the name it begins each line with.
 fn said(stderr: &str) -> String {
     let text = plain(stderr);
@@ -167,6 +233,18 @@ mod tests {
         assert_eq!(environment.changes["A"].as_deref(), Some("1"));
         assert_eq!(environment.changes["B"], None);
         assert!(!environment.failed);
+    }
+
+    #[test]
+    fn finds_the_envrc_that_applies() {
+        let json = r#"{"config": {}, "state": {
+            "foundRC": {"allowed": 2, "path": "/a/b/.envrc"}, "loadedRC": null}}"#;
+        let envrc = Envrc::parse(json).unwrap().unwrap();
+        assert_eq!(envrc.path, Path::new("/a/b/.envrc"));
+        assert_eq!(envrc.allowed, DENIED);
+        assert_eq!(owner(&envrc.path), "b");
+        let json = r#"{"state": {"foundRC": null, "loadedRC": null}}"#;
+        assert!(Envrc::parse(json).unwrap().is_none());
     }
 
     #[test]

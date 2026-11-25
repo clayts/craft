@@ -86,9 +86,9 @@ first of these it finds on the `PATH`:
 | HTML                   | `vscode-html-language-server`                            |
 | CSS                    | `vscode-css-language-server`                             |
 
-Servers run for the open folder, on its `PATH`: Craft's own, changed by the
-project's direnv environment if it has an `.envrc`, so servers can come from
-its development shell. If the `.envrc` is blocked, Craft says so: run
+Servers run for the open folder, on its `PATH`: Craft's own, changed as direnv
+changes a shell's on entering the folder, so servers can come from the
+project's development shell. If the `.envrc` is blocked, Craft says so: run
 `direnv allow`, then open a file to start its server.
 
 A file opened on its own gets what its server can offer without a folder, in
