@@ -5,7 +5,7 @@ use adw::subclass::prelude::*;
 use gtk::{gio, glib};
 
 use crate::editor::Editor;
-use crate::{display_name, file_tree};
+use crate::{display_name, file_tree, lsp};
 
 mod imp {
     use std::cell::{OnceCell, RefCell};
@@ -202,6 +202,8 @@ impl Window {
     pub fn set_project(&self, root: &gio::File) {
         let imp = self.imp();
         imp.project.replace(Some(root.clone()));
+        // Files opened before it move to the project's servers.
+        self.servers().move_to(root, self.editors());
         let tree = file_tree::new(
             root,
             glib::clone!(
@@ -273,8 +275,7 @@ impl Window {
         editor.grab_focus();
         // Without a project, a file's folder serves as its server's root.
         if let Some(root) = self.project().or_else(|| editor.file().parent()) {
-            let servers = self.imp().servers.get().expect("windows set up servers");
-            servers.attach(editor, &root);
+            self.servers().attach(editor, &root);
         }
     }
 
@@ -285,6 +286,10 @@ impl Window {
         tabs.set_selected_page(&tabs.page(&editor));
         editor.grab_focus();
         Some(editor)
+    }
+
+    fn servers(&self) -> &lsp::Servers {
+        self.imp().servers.get().expect("windows set up servers")
     }
 
     fn current_editor(&self) -> Option<Editor> {

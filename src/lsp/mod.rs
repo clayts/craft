@@ -193,7 +193,31 @@ impl Servers {
             }
             client
         };
-        editor.set_document(Some(Document::new(&client, editor, language)));
+        if !editor
+            .document()
+            .is_some_and(|document| document.is_with(&client))
+        {
+            editor.set_document(Some(Document::new(&client, editor, language)));
+        }
+    }
+
+    /// Moves `editors` to the servers for the project at `root`, which their
+    /// window now shows, and shuts down the servers they leave.
+    pub fn move_to(&self, root: &gio::File, editors: impl IntoIterator<Item = Editor>) {
+        for editor in editors {
+            self.attach(&editor, root);
+        }
+        let root = root.uri();
+        self.environments.borrow_mut().retain(|dir, _| *dir == root);
+        let left: Vec<_> = self
+            .clients
+            .borrow_mut()
+            .extract_if(|(_, dir), _| *dir != root)
+            .map(|(_, client)| client)
+            .collect();
+        for client in left {
+            shut_down(client);
+        }
     }
 
     /// The environment of the project at `root`, loaded once, or again after
@@ -226,15 +250,18 @@ impl Servers {
     /// have exited.
     pub fn shutdown(&self) {
         self.environments.take();
-        let application = gio::Application::default();
         for client in self.clients.take().into_values() {
-            let hold = application
-                .as_ref()
-                .map(gio::prelude::ApplicationExtManual::hold);
-            glib::spawn_future_local(async move {
-                client.shutdown().await;
-                drop(hold);
-            });
+            shut_down(client);
         }
     }
+}
+
+/// Shuts `client`'s server down, keeping the application running until it
+/// has exited.
+fn shut_down(client: Rc<Client>) {
+    let hold = gio::Application::default().map(|application| application.hold());
+    glib::spawn_future_local(async move {
+        client.shutdown().await;
+        drop(hold);
+    });
 }
