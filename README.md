@@ -91,9 +91,9 @@ project's direnv environment if it has an `.envrc`, so servers can come from
 its development shell. If the `.envrc` is blocked, Craft says so: run
 `direnv allow`, then open a file to start its server.
 
-A file opened on its own gets what its server offers without a folder, in
-Craft's own environment: most servers work file by file, but rust-analyzer and
-taplo need the folder.
+A file opened on its own gets what its server can offer without a folder, in
+Craft's own environment: most servers work file by file, and those that need a
+folder, such as rust-analyzer, say so.
 
 Errors, warnings and notes are underlined, and stay in place as you type.
 Hovering shows their messages and the server's description of what is under

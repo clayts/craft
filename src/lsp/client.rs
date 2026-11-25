@@ -8,7 +8,7 @@ use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -263,9 +263,10 @@ impl Client {
             launch.environment.apply(&mut command);
             command
         };
-        if let Some(path) = self.root.as_ref().and_then(gio::File::path) {
-            command.current_dir(path);
-        }
+        // Without a project, in a folder holding none, as servers such as
+        // rust-analyzer look for one in their working folder instead.
+        let dir = self.root.as_ref().and_then(gio::File::path);
+        command.current_dir(dir.as_deref().unwrap_or(Path::new("/")));
         let mut child = command.spawn()?;
         let stdin = child.stdin.take().expect("stdin is piped");
         let stdout = child.stdout.take().expect("stdout is piped");

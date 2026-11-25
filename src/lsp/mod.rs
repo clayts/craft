@@ -40,16 +40,12 @@ type SharedEnvironment = Shared<LocalBoxFuture<'static, Rc<Environment>>>;
 struct Server {
     commands: &'static [&'static [&'static str]],
     languages: &'static [(&'static str, &'static str)],
-    /// Whether the server needs a project folder, giving nothing for a file
-    /// opened on its own.
-    needs_folder: bool,
 }
 
 const SERVERS: &[Server] = &[
     Server {
         commands: &[&["rust-analyzer"]],
         languages: &[("rust", "rust")],
-        needs_folder: true,
     },
     Server {
         commands: &[&["clangd"]],
@@ -60,12 +56,10 @@ const SERVERS: &[Server] = &[
             ("cpphdr", "cpp"),
             ("objc", "objective-c"),
         ],
-        needs_folder: false,
     },
     Server {
         commands: &[&["gopls"]],
         languages: &[("go", "go")],
-        needs_folder: false,
     },
     Server {
         commands: &[
@@ -74,7 +68,6 @@ const SERVERS: &[Server] = &[
             &["pylsp"],
         ],
         languages: &[("python3", "python"), ("python", "python")],
-        needs_folder: false,
     },
     Server {
         commands: &[&["typescript-language-server", "--stdio"]],
@@ -84,52 +77,42 @@ const SERVERS: &[Server] = &[
             ("typescript", "typescript"),
             ("typescript-jsx", "typescriptreact"),
         ],
-        needs_folder: false,
     },
     Server {
         commands: &[&["nixd"], &["nil"]],
         languages: &[("nix", "nix")],
-        needs_folder: false,
     },
     Server {
         commands: &[&["bash-language-server", "start"]],
         languages: &[("sh", "shellscript")],
-        needs_folder: false,
     },
     Server {
         commands: &[&["zls"]],
         languages: &[("zig", "zig")],
-        needs_folder: false,
     },
     Server {
         commands: &[&["lua-language-server"]],
         languages: &[("lua", "lua")],
-        needs_folder: false,
     },
     Server {
         commands: &[&["taplo", "lsp", "stdio"]],
         languages: &[("toml", "toml")],
-        needs_folder: true,
     },
     Server {
         commands: &[&["vscode-json-language-server", "--stdio"]],
         languages: &[("json", "json")],
-        needs_folder: false,
     },
     Server {
         commands: &[&["yaml-language-server", "--stdio"]],
         languages: &[("yaml", "yaml")],
-        needs_folder: false,
     },
     Server {
         commands: &[&["vscode-html-language-server", "--stdio"]],
         languages: &[("html", "html")],
-        needs_folder: false,
     },
     Server {
         commands: &[&["vscode-css-language-server", "--stdio"]],
         languages: &[("css", "css")],
-        needs_folder: false,
     },
 ];
 
@@ -191,9 +174,6 @@ impl Servers {
         };
         let server = &SERVERS[index];
         let root = self.root.borrow().clone();
-        if server.needs_folder && root.is_none() {
-            return;
-        }
         let running = self
             .clients
             .borrow()
