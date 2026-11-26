@@ -2,7 +2,6 @@
 
 mod editor;
 mod file_tree;
-mod log_view;
 mod lsp;
 mod theme;
 mod window;

@@ -5,7 +5,7 @@ use adw::subclass::prelude::*;
 use gtk::{gio, glib};
 
 use crate::editor::Editor;
-use crate::{display_name, file_tree, log_view};
+use crate::{display_name, file_tree};
 
 mod imp {
     use std::cell::RefCell;
@@ -45,15 +45,6 @@ mod imp {
             klass.install_action("win.go-to-definition", None, |win, _, _| {
                 win.go_to_definition();
             });
-            klass.install_action(
-                lsp::SHOW_LOG,
-                Some(glib::VariantTy::STRING),
-                |win, _, tool| {
-                    if let Some(tool) = tool.and_then(glib::Variant::str) {
-                        win.show_log(tool);
-                    }
-                },
-            );
             let ctrl = gdk::ModifierType::CONTROL_MASK;
             let none = gdk::ModifierType::empty();
             klass.add_binding_action(gdk::Key::o, ctrl, "win.open-folder");
@@ -137,9 +128,7 @@ mod imp {
                     ));
                     // Editors dragged in from another window join this
                     // one's servers too.
-                    if let Some(editor) = editor(page) {
-                        obj.imp().servers.attach(&editor);
-                    }
+                    obj.imp().servers.attach(&editor(page));
                 }
             ));
             self.tabs.connect_close_page(glib::clone!(
@@ -148,9 +137,10 @@ mod imp {
                 #[upgrade_or]
                 glib::Propagation::Proceed,
                 move |tabs, page| {
-                    let Some(editor) = editor(page).filter(Editor::is_modified) else {
+                    let editor = editor(page);
+                    if !editor.is_modified() {
                         return glib::Propagation::Proceed;
-                    };
+                    }
                     let (tabs, page) = (tabs.clone(), page.clone());
                     glib::spawn_future_local(async move {
                         tabs.close_page_finish(&page, obj.confirm_close(&[editor]).await);
@@ -282,26 +272,6 @@ impl Window {
         editor.grab_focus();
     }
 
-    /// Shows `tool`'s log in a tab, opening one if needed.
-    fn show_log(&self, tool: &str) {
-        let imp = self.imp();
-        imp.servers.indicator().popdown();
-        let Some(log) = imp.servers.log(tool) else {
-            return;
-        };
-        let tabs = &imp.tabs;
-        let shown = (0..tabs.n_pages())
-            .map(|i| tabs.nth_page(i))
-            .find(|page| log_view::shows(page, &log));
-        let page = shown.unwrap_or_else(|| {
-            let page = tabs.append(&log_view::new(&log));
-            page.set_title(&format!("{tool} log"));
-            page
-        });
-        tabs.set_selected_page(&page);
-        page.child().child_focus(gtk::DirectionType::TabForward);
-    }
-
     /// Selects and focuses the tab editing `file`, if there is one.
     fn select(&self, file: &gio::File) -> Option<Editor> {
         let tabs = &self.imp().tabs;
@@ -312,12 +282,12 @@ impl Window {
     }
 
     fn current_editor(&self) -> Option<Editor> {
-        editor(&self.imp().tabs.selected_page()?)
+        self.imp().tabs.selected_page().map(|page| editor(&page))
     }
 
     fn editors(&self) -> impl Iterator<Item = Editor> + '_ {
         let tabs = &self.imp().tabs;
-        (0..tabs.n_pages()).filter_map(|i| editor(&tabs.nth_page(i)))
+        (0..tabs.n_pages()).map(|i| editor(&tabs.nth_page(i)))
     }
 
     fn open_folder(&self) {
@@ -454,8 +424,7 @@ impl Window {
             });
     }
 
-    /// Shows the selected tab's title in the header bar, and the location of
-    /// its file if it has one.
+    /// Shows the selected tab's title and location in the header bar.
     fn update_title(&self) {
         let imp = self.imp();
         let page = imp.tabs.selected_page();
@@ -463,8 +432,7 @@ impl Window {
             .set_title(&page.as_ref().map(adw::TabPage::title).unwrap_or_default());
         imp.heading.set_subtitle(
             &page
-                .and_then(|page| editor(&page))
-                .map(|editor| self.location(&editor.file()))
+                .map(|page| self.location(&editor(&page).file()))
                 .unwrap_or_default(),
         );
     }
@@ -508,7 +476,7 @@ impl Window {
     }
 }
 
-/// The editor shown by `page`, unless it shows a log.
-fn editor(page: &adw::TabPage) -> Option<Editor> {
-    page.child().downcast().ok()
+/// The editor shown by `page`.
+fn editor(page: &adw::TabPage) -> Editor {
+    page.child().downcast().expect("every page holds an editor")
 }

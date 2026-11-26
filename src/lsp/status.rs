@@ -3,34 +3,27 @@
 //! while any is at work, otherwise a warning sign if any has failed since it
 //! last started, and otherwise a tick. It opens onto a list of the tools,
 //! each showing the same along with its work, from which each tool's log
-//! opens in a tab.
+//! opens.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
 use adw::prelude::*;
-use gtk::glib;
-
-use crate::editor::follow_style;
-
-/// The window action that opens a tool's log, given the tool's name.
-pub const SHOW_LOG: &str = "win.show-log";
+use gtk::{gio, glib, pango};
 
 /// How long a tool shows as at work after its work ends, in case more
 /// begins, as it does between the stages of a server's start.
 const LINGER: Duration = Duration::from_millis(500);
 
-/// How many lines each log keeps, dropping its oldest entries.
-const LOG_LINES: i32 = 1000;
+/// How many entries each tool's log keeps, dropping the oldest.
+const LOG_LENGTH: u32 = 100;
 
-/// The popover's width, which stays put as the work it shows changes.
+/// The popover's width, which stays put as its pages and what they show
+/// change.
 const WIDTH: i32 = 400;
 
-/// Indents the lines that continue a log entry, past its time.
-const INDENT: &str = "         ";
-
-/// How much a log entry matters.
+/// How much an entry in a log matters.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Level {
     Error,
@@ -50,9 +43,13 @@ enum State {
 pub struct Status {
     button: gtk::MenuButton,
     icon: Icon,
+    pages: gtk::Stack,
     list: gtk::ListBox,
+    page: LogPage,
     /// The tools, in the order they first came up, as their rows are.
     tools: RefCell<Vec<Tool>>,
+    /// The tool whose log shows, by index.
+    shown: Cell<Option<usize>>,
     /// Numbers work, so that each [`Busy`] knows its own.
     next_work: Cell<u64>,
 }
@@ -67,10 +64,8 @@ struct Tool {
     linger: Option<glib::SourceId>,
     /// Whether an error has been logged since the tool last started afresh.
     failed: bool,
-    /// What the tool last said, which it is not to repeat.
-    last: Option<(Level, String)>,
-    /// What the tool said, as text to read like a file.
-    log: sourceview::Buffer,
+    /// What the tool said, as [`Entry`]s, oldest first.
+    log: gio::ListStore,
 }
 
 /// Work that a tool reports progress on.
@@ -79,6 +74,30 @@ struct Work {
     title: String,
     message: Option<String>,
     percentage: Option<u32>,
+}
+
+struct Entry {
+    level: Level,
+    time: String,
+    message: String,
+}
+
+/// The page showing a tool's log, below a header to go back from it, with
+/// the tool's name.
+struct LogPage {
+    root: gtk::Box,
+    back: gtk::Button,
+    title: gtk::Label,
+    /// The tool's work under way, a line each.
+    work: gtk::Label,
+    /// Bound to the log that shows.
+    entries: gtk::ListBox,
+    scroller: gtk::ScrolledWindow,
+    /// Whether the log keeps its latest entry in view, as it does until
+    /// scrolled away from it.
+    following: Rc<Cell<bool>>,
+    /// Shown while the tool has neither work nor a log to show.
+    quiet: gtk::Label,
 }
 
 /// A tick, a spinner or a warning sign, showing a state.
@@ -99,14 +118,22 @@ impl Status {
         let list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
             .css_classes(["navigation-sidebar"])
+            .build();
+
+        let pages = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::SlideLeftRight)
+            .vhomogeneous(false)
             .width_request(WIDTH)
             .build();
+        let page = LogPage::new();
+        pages.add_named(&list, Some("tools"));
+        pages.add_named(&page.root, Some("log"));
         let popover = gtk::Popover::builder()
             .child(
                 &adw::Clamp::builder()
                     .maximum_size(WIDTH)
                     .tightening_threshold(WIDTH)
-                    .child(&list)
+                    .child(&pages)
                     .build(),
             )
             .build();
@@ -117,24 +144,51 @@ impl Status {
             .popover(&popover)
             .visible(false)
             .build();
-        Rc::new(Self {
+
+        let status = Rc::new(Self {
             button,
             icon,
+            pages,
             list,
+            page,
             tools: RefCell::default(),
+            shown: Cell::new(None),
             next_work: Cell::new(0),
-        })
+        });
+        let weak = Rc::downgrade(&status);
+        status.list.connect_row_activated(glib::clone!(
+            #[strong]
+            weak,
+            move |_, row| {
+                if let (Some(status), Ok(index)) = (weak.upgrade(), usize::try_from(row.index())) {
+                    status.open(index);
+                }
+            }
+        ));
+        status.page.back.connect_clicked(glib::clone!(
+            #[strong]
+            weak,
+            move |_| {
+                if let Some(status) = weak.upgrade() {
+                    status.close(gtk::StackTransitionType::SlideLeftRight);
+                }
+            }
+        ));
+        popover.connect_closed(move |_| {
+            if let Some(status) = weak.upgrade() {
+                status.close(gtk::StackTransitionType::None);
+            }
+        });
+        status
     }
 
     pub fn widget(&self) -> &gtk::MenuButton {
         &self.button
     }
 
-    /// The log of the tool named `tool`, if it has come up.
-    pub fn log_of(&self, tool: &str) -> Option<sourceview::Buffer> {
-        let tools = self.tools.borrow();
-        let tool = tools.iter().find(|known| known.name == tool)?;
-        Some(tool.log.clone())
+    /// Whether the tool named `tool` has come up.
+    pub fn knows(&self, tool: &str) -> bool {
+        self.tools.borrow().iter().any(|known| known.name == tool)
     }
 
     /// Logs `message` from `tool`, unless it says nothing, or what the tool
@@ -149,11 +203,16 @@ impl Status {
             let mut tools = self.tools.borrow_mut();
             let tool = &mut tools[index];
             tool.failed |= level == Level::Error;
-            let repeat =
-                (tool.last.as_ref()).is_some_and(|(last, said)| *last == level && said == message);
+            let repeat = tool.last().is_some_and(|last| {
+                let last = last.borrow::<Entry>();
+                last.level == level && last.message == message
+            });
             if !repeat {
-                append(&tool.log, &entry(level, message));
-                tool.last = Some((level, message.to_owned()));
+                if tool.log.n_items() == LOG_LENGTH {
+                    tool.log.remove(0);
+                }
+                let entry = Entry::new(level, message);
+                tool.log.append(&glib::BoxedAnyObject::new(entry));
             }
         }
         self.refresh(index);
@@ -211,15 +270,11 @@ impl Status {
             .title(name)
             .use_markup(false)
             .activatable(true)
-            .action_name(SHOW_LOG)
-            .action_target(&name.to_variant())
             .build();
         row.add_suffix(&icon.stack);
+        row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
         self.list.append(&row);
         self.button.set_visible(true);
-        let log = sourceview::Buffer::new(None);
-        log.set_enable_undo(false);
-        follow_style(&log);
         let mut tools = self.tools.borrow_mut();
         tools.push(Tool {
             name: name.to_owned(),
@@ -228,21 +283,59 @@ impl Status {
             works: Vec::new(),
             linger: None,
             failed: false,
-            last: None,
-            log,
+            log: gio::ListStore::new::<glib::BoxedAnyObject>(),
         });
         tools.len() - 1
     }
 
-    /// Shows how the tool numbered `index` is, on its row and the button.
+    /// Shows how the tool numbered `index` is, on its row, its log page if
+    /// that shows, and the button.
     fn refresh(&self, index: usize) {
         let tools = self.tools.borrow();
         let tool = &tools[index];
         tool.icon.set(tool.state());
-        let works: Vec<String> = tool.works.iter().map(Work::describe).collect();
-        tool.row.set_subtitle(&works.join("\n"));
+        tool.row.set_subtitle(&tool.work());
+        if self.shown.get() == Some(index) {
+            self.show_work(tool);
+        }
         let states = tools.iter().map(Tool::state);
         self.icon.set(states.max().unwrap_or(State::Idle));
+    }
+
+    /// Shows the log of the tool numbered `index`, with its latest entry in
+    /// view.
+    fn open(&self, index: usize) {
+        let tools = self.tools.borrow();
+        let tool = &tools[index];
+        self.shown.set(Some(index));
+        self.page.title.set_text(&tool.name);
+        self.page.following.set(true);
+        self.page.entries.bind_model(Some(&tool.log), |item| {
+            let entry = item.downcast_ref::<glib::BoxedAnyObject>();
+            let entry = entry.expect("logs hold entries").borrow::<Entry>();
+            entry.widget().upcast()
+        });
+        self.show_work(tool);
+        self.pages.set_visible_child_name("log");
+        // Rather than an entry, which would select all it says.
+        self.page.back.grab_focus();
+    }
+
+    /// Goes back from a log to the list of tools.
+    fn close(&self, transition: gtk::StackTransitionType) {
+        self.shown.set(None);
+        self.pages.set_visible_child_full("tools", transition);
+    }
+
+    /// Shows the work of `tool`, whose log shows, or that it has nothing to
+    /// show.
+    fn show_work(&self, tool: &Tool) {
+        let work = tool.work();
+        let said = tool.log.n_items() > 0;
+        self.page.work.set_text(&work);
+        self.page.work.set_visible(!work.is_empty());
+        self.page.scroller.set_visible(said);
+        self.page.quiet.set_visible(work.is_empty() && !said);
     }
 
     /// Ends the work that `busy` stood for, the tool showing as at work a
@@ -266,6 +359,89 @@ impl Status {
             }
         }
         self.refresh(busy.tool);
+    }
+}
+
+impl LogPage {
+    fn new() -> Self {
+        let back = gtk::Button::builder()
+            .icon_name("go-previous-symbolic")
+            .tooltip_text("Back")
+            .css_classes(["flat"])
+            .build();
+        let title = gtk::Label::builder()
+            .xalign(0.0)
+            .hexpand(true)
+            .ellipsize(pango::EllipsizeMode::End)
+            .css_classes(["heading"])
+            .build();
+        let header = gtk::Box::builder().spacing(6).build();
+        header.append(&back);
+        header.append(&title);
+        let work = gtk::Label::builder()
+            .xalign(0.0)
+            .wrap(true)
+            .wrap_mode(pango::WrapMode::WordChar)
+            .css_classes(["dim-label"])
+            .build();
+        let entries = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(["navigation-sidebar"])
+            .build();
+        // A line between each entry and the next.
+        entries.set_header_func(|row, before| {
+            let separator = before.map(|_| gtk::Separator::new(gtk::Orientation::Horizontal));
+            row.set_header(separator.as_ref());
+        });
+        let scroller = gtk::ScrolledWindow::builder()
+            .child(&entries)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_height(true)
+            .max_content_height(400)
+            .build();
+        let following = Rc::new(Cell::new(true));
+        let adjustment = scroller.vadjustment();
+        adjustment.connect_value_changed(glib::clone!(
+            #[strong]
+            following,
+            move |adjustment| following.set(at_end(adjustment))
+        ));
+        adjustment.connect_changed(glib::clone!(
+            #[strong]
+            following,
+            move |adjustment| {
+                if following.get() {
+                    // Once laid out: a value set while the log is being laid
+                    // out may not move it.
+                    let adjustment = adjustment.clone();
+                    glib::idle_add_local_once(move || {
+                        adjustment.set_value(adjustment.upper() - adjustment.page_size());
+                    });
+                }
+            }
+        ));
+        let quiet = gtk::Label::builder()
+            .label("Nothing to show")
+            .css_classes(["dim-label"])
+            .build();
+        let root = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(12)
+            .build();
+        root.append(&header);
+        root.append(&work);
+        root.append(&scroller);
+        root.append(&quiet);
+        Self {
+            root,
+            back,
+            title,
+            work,
+            entries,
+            scroller,
+            following,
+            quiet,
+        }
     }
 }
 
@@ -306,6 +482,19 @@ impl Tool {
             State::Idle
         }
     }
+
+    /// The tool's work under way, a line each.
+    fn work(&self) -> String {
+        let works: Vec<String> = self.works.iter().map(Work::describe).collect();
+        works.join("\n")
+    }
+
+    /// The latest entry in the tool's log.
+    fn last(&self) -> Option<glib::BoxedAnyObject> {
+        self.log
+            .item(self.log.n_items().checked_sub(1)?)
+            .and_downcast()
+    }
 }
 
 impl Work {
@@ -319,6 +508,66 @@ impl Work {
             .map(|message| format!(" – {message}"))
             .unwrap_or_default();
         format!("{}{percentage}{message}", self.title)
+    }
+}
+
+impl Entry {
+    fn new(level: Level, message: &str) -> Self {
+        let time = glib::DateTime::now_local()
+            .and_then(|now| now.format("%H:%M:%S"))
+            .map(String::from)
+            .unwrap_or_default();
+        Self {
+            level,
+            time,
+            message: message.to_owned(),
+        }
+    }
+
+    /// The entry as shown: its time, how much it matters if much, and what it
+    /// says.
+    fn widget(&self) -> gtk::ListBoxRow {
+        let heading = gtk::Box::builder().spacing(6).build();
+        heading.append(
+            &gtk::Label::builder()
+                .label(&self.time)
+                .css_classes(["dim-label", "caption"])
+                .build(),
+        );
+        let level = match self.level {
+            Level::Error => Some(("Error", "error")),
+            Level::Warning => Some(("Warning", "warning")),
+            Level::Info => None,
+        };
+        if let Some((label, class)) = level {
+            heading.append(
+                &gtk::Label::builder()
+                    .label(label)
+                    .css_classes(["caption-heading", class])
+                    .build(),
+            );
+        }
+        let entry = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .margin_top(6)
+            .margin_bottom(6)
+            .build();
+        entry.append(&heading);
+        entry.append(
+            &gtk::Label::builder()
+                .label(&self.message)
+                .xalign(0.0)
+                .wrap(true)
+                .wrap_mode(pango::WrapMode::WordChar)
+                .max_width_chars(50)
+                .selectable(true)
+                .build(),
+        );
+        gtk::ListBoxRow::builder()
+            .child(&entry)
+            .activatable(false)
+            .build()
     }
 }
 
@@ -351,57 +600,7 @@ impl Icon {
     }
 }
 
-/// `message` as a log entry: a line with the time, and how much it matters
-/// if much, then the message's further lines, indented.
-fn entry(level: Level, message: &str) -> String {
-    let time = glib::DateTime::now_local()
-        .and_then(|now| now.format("%H:%M:%S"))
-        .map_or_else(|_| "--:--:--".to_owned(), String::from);
-    let level = match level {
-        Level::Error => "error: ",
-        Level::Warning => "warning: ",
-        Level::Info => "",
-    };
-    let lines: Vec<&str> = message
-        .lines()
-        .map(str::trim_end)
-        .filter(|line| !line.is_empty())
-        .collect();
-    format!("{time} {level}{}\n", lines.join(&format!("\n{INDENT}")))
-}
-
-/// Adds `entry` to the end of `log`, dropping the oldest entries beyond
-/// [`LOG_LINES`].
-fn append(log: &sourceview::Buffer, entry: &str) {
-    log.insert(&mut log.end_iter(), entry);
-    let excess = log.line_count() - LOG_LINES;
-    if excess > 0
-        && let Some(mut end) = log.iter_at_line(excess)
-    {
-        // On to the start of an entry, rather than into one, keeping the
-        // latest whole however long.
-        while end.char() == ' ' {
-            end.forward_line();
-        }
-        if !end.is_end() {
-            log.delete(&mut log.start_iter(), &mut end);
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn entries_indent_their_further_lines() {
-        let error = entry(Level::Error, "Failed\n\nbecause  \n  of this");
-        let (time, rest) = error.split_once(' ').unwrap();
-        assert_eq!(time.len() + 1, INDENT.len());
-        assert_eq!(
-            rest,
-            format!("error: Failed\n{INDENT}because\n{INDENT}  of this\n")
-        );
-        assert!(entry(Level::Info, "Started").ends_with(" Started\n"));
-    }
+/// Whether `adjustment` is scrolled to the end.
+fn at_end(adjustment: &gtk::Adjustment) -> bool {
+    adjustment.value() >= adjustment.upper() - adjustment.page_size()
 }

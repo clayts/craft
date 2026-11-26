@@ -111,12 +111,13 @@ up as you type.
 A button in the header bar shows how the tools a window runs, its language
 servers and direnv, are faring: a spinner while any is at work, otherwise a
 warning sign if any has failed since it last started, and otherwise a tick. It
-lists the tools, each with its own sign and the work it has under way, and
-clicking one opens its log in a tab, read like a text file: starting, failing to
-start or crashing, its program missing from the `PATH`, and all it said, from
-errors such as failing to load the project to notes. A server that crashes
-after running for at least 30 seconds restarts by itself; one that crashes
-sooner restarts when you next open a file in its language.
+lists the tools, each with its own sign and the work it has under way, and each
+opens onto its log: starting, failing to start or crashing, its program missing
+from the `PATH`, and all it said, from errors such as failing to load the
+project to notes. The log keeps its latest entry in view, unless scrolled away
+from it. A server that crashes after running for at least 30 seconds restarts
+by itself; one that crashes sooner restarts when you next open a file in its
+language.
 
 ## Theme
 
@@ -170,7 +171,6 @@ stays.
 | `src/window.rs`    | Project window: layout, tabs, actions, close prompts                                      |
 | `src/editor.rs`    | One open file: source view, loading and saving                                            |
 | `src/file_tree.rs` | Sidebar tree: loaded lazily, updated live                                                 |
-| `src/log_view.rs`  | A tool's log, read in a tab                                                               |
 | `src/theme.rs`     | Theme: `theme.json`, read and kept up with                                                |
 | `src/theme.json`   | Craft's own theme                                                                         |
 | `src/lsp/`         | Language servers: environments, processes, files, hover, completion, highlighting, status |

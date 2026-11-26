@@ -77,7 +77,17 @@ mod imp {
                 obj,
                 move |_| obj.notify_title()
             ));
-            super::follow_style(&self.buffer);
+            adw::StyleManager::default()
+                .bind_property("dark", &self.buffer, "style-scheme")
+                .transform_to(|_, dark: bool| {
+                    sourceview::StyleSchemeManager::default().scheme(if dark {
+                        "Adwaita-dark"
+                    } else {
+                        "Adwaita"
+                    })
+                })
+                .sync_create()
+                .build();
 
             let view = &self.view;
             view.set_buffer(Some(&self.buffer));
@@ -297,21 +307,6 @@ impl Editor {
         dialog.set_close_response("cancel");
         dialog.choose_future(Some(self)).await == "overwrite"
     }
-}
-
-/// Shows `buffer` in the light or dark style, as the system prefers.
-pub fn follow_style(buffer: &sourceview::Buffer) {
-    adw::StyleManager::default()
-        .bind_property("dark", buffer, "style-scheme")
-        .transform_to(|_, dark: bool| {
-            sourceview::StyleSchemeManager::default().scheme(if dark {
-                "Adwaita-dark"
-            } else {
-                "Adwaita"
-            })
-        })
-        .sync_create()
-        .build();
 }
 
 /// `text` with every line ended by `\r\n`, including lines pasted in with

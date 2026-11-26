@@ -26,7 +26,6 @@ pub use document::Document;
 use environment::Environment;
 pub use position::Encoding;
 use position::Shift;
-pub use status::SHOW_LOG;
 use status::{Level, Status};
 
 use crate::editor::Editor;
@@ -207,7 +206,7 @@ impl Default for Servers {
 fn report_theme(status: &Status) {
     match theme::error() {
         Some(error) => status.log(THEME, Level::Error, &error),
-        None if status.log_of(THEME).is_some() => status.started(THEME, "Loaded"),
+        None if status.knows(THEME) => status.started(THEME, "Loaded"),
         None => {}
     }
 }
@@ -216,11 +215,6 @@ impl Servers {
     /// Shows how the servers and direnv are, and what they are doing.
     pub fn indicator(&self) -> &gtk::MenuButton {
         self.status.widget()
-    }
-
-    /// What the tool named `tool`, a server or direnv, has said.
-    pub fn log(&self, tool: &str) -> Option<sourceview::Buffer> {
-        self.status.log_of(tool)
     }
 
     /// Runs the servers for the project folder `root`, which the window now
