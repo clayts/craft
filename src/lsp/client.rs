@@ -308,19 +308,20 @@ impl Client {
             .request::<request::Initialize>(self.initialize_params())
             .await
         {
-            Ok(result) => {
+            // Unless shut down while the answer came.
+            Ok(result) if matches!(*self.state.borrow(), State::Starting) => {
                 self.notify::<notification::Initialized>(lsp_types::InitializedParams {});
                 self.state
                     .replace(State::Running(Box::new(result.capabilities)));
                 if let Some(launch) = &*self.launch.borrow() {
-                    let started = format!("Started\n\n{}", launch.program.display());
+                    let started = format!("Started\n{}", launch.program.display());
                     self.status.started(self.name(), &started);
                 }
                 for document in self.documents() {
                     document.open();
                 }
             }
-            Err(Error::Disconnected) => {}
+            Ok(_) | Err(Error::Disconnected) => {}
             Err(err) => {
                 let failed = format!("Failed to start: {err}");
                 self.status.log(self.name(), Level::Error, &failed);

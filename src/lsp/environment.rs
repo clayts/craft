@@ -31,15 +31,6 @@ pub struct Environment {
     pub failed: bool,
 }
 
-/// The `.envrc` that direnv finds for a folder: the folder's own, or else
-/// its nearest parent's.
-#[derive(Deserialize)]
-struct Envrc {
-    path: PathBuf,
-    /// Whether it is allowed, blocked until allowed, or denied.
-    allowed: u8,
-}
-
 impl Environment {
     /// The environment of the project folder `dir`, telling `status` how
     /// loading it went. Where direnv cannot give it, that is Craft's own.
@@ -56,48 +47,31 @@ impl Environment {
     /// As [`Self::load`], or why direnv cannot give the environment.
     async fn try_load(dir: &Path, status: &Rc<Status>) -> Result<Self, String> {
         if glib::find_program_in_path(DIRENV).is_none() {
-            // The `.envrc` that direnv would find.
-            let envrc = dir
-                .ancestors()
-                .map(|dir| dir.join(".envrc"))
-                .find(|envrc| envrc.exists());
-            return match envrc {
-                Some(envrc) => Err(format!(
-                    "Not found on the PATH, so {}’s .envrc goes unused",
-                    owner(&envrc)
-                )),
-                None => Ok(Self::default()),
+            // Whether there is an `.envrc` that direnv would find.
+            let envrc = dir.ancestors().any(|dir| dir.join(".envrc").exists());
+            return if envrc {
+                Err("Not found on the PATH, so .envrc goes unused".to_owned())
+            } else {
+                Ok(Self::default())
             };
         }
-        let fail = |name: &dyn Display, detail: &dyn Display| {
-            format!("Could not load {name}’s environment\n\n{detail}")
-        };
-        let envrc = Envrc::find(dir)
-            .await
-            .map_err(|err| fail(&glib::filename_display_basename(dir), &err))?;
-        let name = envrc.as_ref().map_or_else(
-            || glib::filename_display_basename(dir),
-            |envrc| owner(&envrc.path),
-        );
-        let allowed = envrc.map(|envrc| envrc.allowed);
+        let fail = |detail: &dyn Display| format!("Could not load environment\n{detail}");
+        let allowed = allowed(dir).await.map_err(|err| fail(&err))?;
         if allowed == Some(BLOCKED) {
-            return Err(format!(
-                "{name}’s .envrc is blocked; run “direnv allow” to use it"
-            ));
+            return Err(".envrc blocked; run “direnv allow” to use it".to_owned());
         }
-        let busy = (allowed == Some(ALLOWED))
-            .then(|| status.busy(DIRENV, &format!("Loading {name}’s environment")));
+        let busy = (allowed == Some(ALLOWED)).then(|| status.busy(DIRENV, "Loading environment"));
         // Without an `.envrc` too, to undo that of any folder Craft was
         // started in.
         let (json, said) = run(dir, ["export", "json"])
             .await
-            .map_err(|err| fail(&name, &err))?;
+            .map_err(|err| fail(&err))?;
         drop(busy);
-        let environment = Self::parse(&json).map_err(|err| fail(&name, &err))?;
+        let environment = Self::parse(&json).map_err(|err| fail(&err))?;
         // direnv says nothing of an environment already in effect.
         let loaded = match allowed {
-            Some(ALLOWED) => format!("Loaded {name}’s environment\n\n{said}"),
-            Some(DENIED) => format!("{name}’s .envrc is denied; run “direnv allow” to use it"),
+            Some(ALLOWED) => format!("Loaded environment\n{said}"),
+            Some(DENIED) => ".envrc denied".to_owned(),
             _ => String::new(),
         };
         status.started(DIRENV, &loaded);
@@ -148,18 +122,17 @@ impl Environment {
     }
 }
 
-impl Envrc {
-    /// The `.envrc` that direnv finds for `dir`, if any.
-    async fn find(dir: &Path) -> Result<Option<Self>, String> {
-        let (json, _) = run(dir, ["status", "--json"]).await?;
-        Self::parse(&json).map_err(|err| err.to_string())
-    }
+/// How direnv regards the `.envrc` it finds for `dir`, the folder's own or
+/// else its nearest parent's, if it finds one.
+async fn allowed(dir: &Path) -> Result<Option<u8>, String> {
+    let (json, _) = run(dir, ["status", "--json"]).await?;
+    parse_allowed(&json).map_err(|err| err.to_string())
+}
 
-    /// Reads the output of `direnv status --json`.
-    fn parse(json: &str) -> serde_json::Result<Option<Self>> {
-        let status: serde_json::Value = serde_json::from_str(json)?;
-        Option::deserialize(&status["state"]["foundRC"])
-    }
+/// Reads how `direnv status --json` regards the `.envrc` it found, if any.
+fn parse_allowed(json: &str) -> serde_json::Result<Option<u8>> {
+    let status: serde_json::Value = serde_json::from_str(json)?;
+    Option::deserialize(&status["state"]["foundRC"]["allowed"])
 }
 
 /// Runs `direnv {command} {option}` in `dir`, for what it prints and, in
@@ -182,11 +155,6 @@ async fn run(dir: &Path, [command, option]: [&str; 2]) -> Result<(glib::GString,
     } else {
         Err(said)
     }
-}
-
-/// The name of the folder that `envrc` is in, whose environment it gives.
-fn owner(envrc: &Path) -> glib::GString {
-    glib::filename_display_basename(envrc.parent().unwrap_or(envrc))
 }
 
 /// What direnv said, in plain text, without the name it begins each line with.
@@ -236,15 +204,12 @@ mod tests {
     }
 
     #[test]
-    fn finds_the_envrc_that_applies() {
+    fn reads_how_direnv_regards_the_envrc() {
         let json = r#"{"config": {}, "state": {
-            "foundRC": {"allowed": 2, "path": "/a/b/.envrc"}, "loadedRC": null}}"#;
-        let envrc = Envrc::parse(json).unwrap().unwrap();
-        assert_eq!(envrc.path, Path::new("/a/b/.envrc"));
-        assert_eq!(envrc.allowed, DENIED);
-        assert_eq!(owner(&envrc.path), "b");
+            "foundRC": {"allowed": 2, "path": "/a/.envrc"}, "loadedRC": null}}"#;
+        assert_eq!(parse_allowed(json).unwrap(), Some(DENIED));
         let json = r#"{"state": {"foundRC": null, "loadedRC": null}}"#;
-        assert!(Envrc::parse(json).unwrap().is_none());
+        assert_eq!(parse_allowed(json).unwrap(), None);
     }
 
     #[test]

@@ -25,6 +25,7 @@ pub use document::Document;
 use environment::Environment;
 pub use position::Encoding;
 use position::Shift;
+pub use status::SHOW_LOG;
 use status::{Level, Status};
 
 use crate::editor::Editor;
@@ -145,7 +146,7 @@ impl Server {
                     .collect()
             })
             .unwrap_or_default();
-        format!("{missing}\n\nThe PATH holds:\n{}", dirs.join("\n"))
+        format!("{missing}\nThe PATH holds:\n{}", dirs.join("\n"))
     }
 }
 
@@ -183,9 +184,14 @@ impl Default for Servers {
 }
 
 impl Servers {
-    /// Shows how the servers are, and what they and direnv said.
+    /// Shows how the servers and direnv are, and what they are doing.
     pub fn indicator(&self) -> &gtk::MenuButton {
         self.status.widget()
+    }
+
+    /// What the tool named `tool`, a server or direnv, has said.
+    pub fn log(&self, tool: &str) -> Option<sourceview::Buffer> {
+        self.status.log_of(tool)
     }
 
     /// Runs the servers for the project folder `root`, which the window now
