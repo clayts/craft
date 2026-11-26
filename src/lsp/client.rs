@@ -26,9 +26,12 @@ use lsp_types::{
     CompletionItemCapabilityResolveSupport, ConfigurationParams, GeneralClientCapabilities,
     GotoCapability, HoverClientCapabilities, InitializeParams, MarkupKind, MessageType,
     NumberOrString, PositionEncodingKind, ProgressParams, ProgressParamsValue,
-    PublishDiagnosticsClientCapabilities, PublishDiagnosticsParams, ServerCapabilities,
-    ShowMessageParams, TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities, Uri,
-    WindowClientCapabilities, WorkDoneProgress, WorkspaceClientCapabilities, WorkspaceFolder,
+    PublishDiagnosticsClientCapabilities, PublishDiagnosticsParams, SemanticTokenModifier,
+    SemanticTokenType, SemanticTokensClientCapabilities, SemanticTokensClientCapabilitiesRequests,
+    SemanticTokensFullOptions, SemanticTokensWorkspaceClientCapabilities, ServerCapabilities,
+    ShowMessageParams, TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities,
+    TokenFormat, Uri, WindowClientCapabilities, WorkDoneProgress, WorkspaceClientCapabilities,
+    WorkspaceFolder,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -46,6 +49,47 @@ const MIN_UPTIME_FOR_RESTART: Duration = Duration::from_secs(30);
 
 /// How long a server gets to shut down before it is killed.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+
+/// The kinds of token that servers can mark out for semantic highlighting.
+/// Servers can add their own, and the theme can style any.
+const TOKEN_TYPES: [SemanticTokenType; 23] = [
+    SemanticTokenType::NAMESPACE,
+    SemanticTokenType::TYPE,
+    SemanticTokenType::CLASS,
+    SemanticTokenType::ENUM,
+    SemanticTokenType::INTERFACE,
+    SemanticTokenType::STRUCT,
+    SemanticTokenType::TYPE_PARAMETER,
+    SemanticTokenType::PARAMETER,
+    SemanticTokenType::VARIABLE,
+    SemanticTokenType::PROPERTY,
+    SemanticTokenType::ENUM_MEMBER,
+    SemanticTokenType::EVENT,
+    SemanticTokenType::FUNCTION,
+    SemanticTokenType::METHOD,
+    SemanticTokenType::MACRO,
+    SemanticTokenType::KEYWORD,
+    SemanticTokenType::MODIFIER,
+    SemanticTokenType::COMMENT,
+    SemanticTokenType::STRING,
+    SemanticTokenType::NUMBER,
+    SemanticTokenType::REGEXP,
+    SemanticTokenType::OPERATOR,
+    SemanticTokenType::DECORATOR,
+];
+
+const TOKEN_MODIFIERS: [SemanticTokenModifier; 10] = [
+    SemanticTokenModifier::DECLARATION,
+    SemanticTokenModifier::DEFINITION,
+    SemanticTokenModifier::READONLY,
+    SemanticTokenModifier::STATIC,
+    SemanticTokenModifier::DEPRECATED,
+    SemanticTokenModifier::ABSTRACT,
+    SemanticTokenModifier::ASYNC,
+    SemanticTokenModifier::MODIFICATION,
+    SemanticTokenModifier::DOCUMENTATION,
+    SemanticTokenModifier::DEFAULT_LIBRARY,
+];
 
 pub(super) struct Client {
     server: &'static Server,
@@ -365,6 +409,21 @@ impl Client {
                 link_support: Some(true),
                 ..Default::default()
             }),
+            semantic_tokens: Some(SemanticTokensClientCapabilities {
+                requests: SemanticTokensClientCapabilitiesRequests {
+                    range: Some(false),
+                    full: Some(SemanticTokensFullOptions::Delta { delta: Some(true) }),
+                },
+                token_types: TOKEN_TYPES.to_vec(),
+                token_modifiers: TOKEN_MODIFIERS.to_vec(),
+                formats: vec![TokenFormat::RELATIVE],
+                overlapping_token_support: Some(false),
+                multiline_token_support: Some(false),
+                // Syntax highlighting stays, and tokens the theme leaves be
+                // keep its colors.
+                augments_syntax_tokens: Some(true),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         InitializeParams {
@@ -383,6 +442,9 @@ impl Client {
                 workspace: Some(WorkspaceClientCapabilities {
                     workspace_folders: Some(true),
                     configuration: Some(true),
+                    semantic_tokens: Some(SemanticTokensWorkspaceClientCapabilities {
+                        refresh_support: Some(true),
+                    }),
                     ..Default::default()
                 }),
                 window: Some(WindowClientCapabilities {
@@ -483,13 +545,19 @@ impl Client {
                 let folders = self.workspace_folder().map(|folder| [folder]);
                 self.send(id, None, Body::Result(folders));
             }
+            // Such as once the server has loaded the project.
+            request::SemanticTokensRefresh::METHOD => {
+                self.send(id, None, Body::Result(()));
+                for document in self.documents() {
+                    document.rehighlight();
+                }
+            }
             // Accepted, though nothing comes of them.
             request::WorkDoneProgressCreate::METHOD
             | request::RegisterCapability::METHOD
             | request::UnregisterCapability::METHOD
             | request::ShowMessageRequest::METHOD
             | request::WorkspaceDiagnosticRefresh::METHOD
-            | request::SemanticTokensRefresh::METHOD
             | request::InlayHintRefreshRequest::METHOD
             | request::InlineValueRefreshRequest::METHOD
             | request::CodeLensRefresh::METHOD => self.send(id, None, Body::Result(())),

@@ -1,0 +1,13 @@
+{
+  "function, method": { "light": "#1c71d8", "dark": "#62a0ea" },
+  "macro, decorator": { "light": "#4e57ba", "dark": "#7d8ac7" },
+  "class, enum, interface, struct, type, typeAlias, typeParameter, union, builtinType": {
+    "light": "#218787",
+    "dark": "#5bc8af",
+    "bold": true
+  },
+  "enumMember, const, constant, static": { "light": "#4e57ba", "dark": "#7d8ac7" },
+  "namespace": { "light": "#986a44", "dark": "#cdab8f" },
+  "*.mutable": { "underline": true },
+  "*.deprecated": { "strikethrough": true }
+}

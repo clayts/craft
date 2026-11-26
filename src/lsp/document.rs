@@ -28,6 +28,7 @@ use sourceview::prelude::*;
 use super::client::Client;
 use super::completion;
 use super::hover::HoverProvider;
+use super::semantic::Highlighter;
 use super::{Encoding, Shift};
 use crate::editor::Editor;
 
@@ -47,6 +48,7 @@ pub struct Document {
     view: sourceview::View,
     hover: HoverProvider,
     completion: completion::Provider,
+    highlighter: Highlighter,
     handlers: Vec<glib::SignalHandlerId>,
     /// Whether the server has the document, which it lacks while starting.
     opened: Cell<bool>,
@@ -68,13 +70,15 @@ impl Document {
         let document = Rc::new_cyclic(|this: &Weak<Self>| {
             let (insert, delete, changed) = (this.clone(), this.clone(), this.clone());
             let handlers = vec![
-                buffer.connect_insert_text(move |_, iter, text| {
+                buffer.connect_insert_text(move |buffer, iter, text| {
                     if let Some(document) = insert.upgrade() {
+                        document.highlighter.touch(buffer, iter, iter);
                         document.edited(iter, iter, text);
                     }
                 }),
-                buffer.connect_delete_range(move |_, start, end| {
+                buffer.connect_delete_range(move |buffer, start, end| {
                     if let Some(document) = delete.upgrade() {
+                        document.highlighter.touch(buffer, start, end);
                         document.edited(start, end, "");
                     }
                 }),
@@ -97,6 +101,7 @@ impl Document {
                 view: view.clone(),
                 hover: HoverProvider::new(this.clone()),
                 completion: completion::Provider::new(this.clone()),
+                highlighter: Highlighter::new(this.clone()),
                 handlers,
                 opened: Cell::new(false),
                 version: Cell::new(0),
@@ -112,6 +117,23 @@ impl Document {
 
     pub(super) fn editor(&self) -> Option<Editor> {
         self.editor.upgrade()
+    }
+
+    pub(super) fn client(&self) -> &Rc<Client> {
+        &self.client
+    }
+
+    pub(super) fn uri(&self) -> &Uri {
+        &self.uri
+    }
+
+    /// The version of the text that the server has.
+    pub(super) fn version(&self) -> i32 {
+        self.version.get()
+    }
+
+    pub(super) fn highlighter(&self) -> &Highlighter {
+        &self.highlighter
     }
 
     pub(super) fn language(&self) -> &'static str {
@@ -144,12 +166,21 @@ impl Document {
                     self.text(),
                 ),
             });
+        self.highlighter.refresh(self);
     }
 
     /// Forgets the server's copy, which it lost by stopping.
     pub(super) fn closed(&self) {
         self.opened.set(false);
         self.clear_diagnostics();
+        self.highlighter.clear(&self.buffer);
+    }
+
+    /// Highlights the text anew, as the server asks, once it has the text.
+    pub(super) fn rehighlight(&self) {
+        if self.opened.get() {
+            self.highlighter.refresh(self);
+        }
     }
 
     pub fn saved(&self) {
@@ -231,6 +262,7 @@ impl Document {
                 text_document: VersionedTextDocumentIdentifier::new(self.uri.clone(), version),
                 content_changes: vec![change],
             });
+        self.highlighter.schedule();
         version
     }
 
@@ -304,6 +336,15 @@ impl Document {
         let table = self.buffer.tag_table();
         for (tag, _) in self.diagnostics.take() {
             table.remove(&tag);
+        }
+    }
+
+    /// Ranks `tag` below the diagnostics' tags, so that their underlines show
+    /// over any of its own.
+    pub(super) fn rank_below_diagnostics(&self, tag: &gtk::TextTag) {
+        let diagnostics = self.diagnostics.borrow();
+        if let Some(lowest) = diagnostics.iter().map(|(tag, _)| tag.priority()).min() {
+            tag.set_priority(lowest);
         }
     }
 
@@ -468,6 +509,7 @@ impl Drop for Document {
         self.view.hover().remove_provider(&self.hover);
         self.view.completion().remove_provider(&self.completion);
         self.clear_diagnostics();
+        self.highlighter.clear(&self.buffer);
         if self.opened.get() && self.client.capabilities().is_some() {
             self.client
                 .notify::<DidCloseTextDocument>(DidCloseTextDocumentParams {

@@ -104,6 +104,10 @@ Completions appear as you type, or on Ctrl+Space, best matches first. Enter or
 Tab inserts the one selected, adding any import it needs, and Tab then moves
 through its fields, such as a function's arguments.
 
+Servers that can say what each piece of code is, such as a function, a type or
+a mutable variable, highlight it as such, as the [theme](#theme) says, keeping
+up as you type.
+
 A button in the header bar shows how the tools a window runs, its language
 servers and direnv, are faring: a spinner while any is at work, otherwise a
 warning sign if any has failed since it last started, and otherwise a tick. It
@@ -113,6 +117,35 @@ start or crashing, its program missing from the `PATH`, and all it said, from
 errors such as failing to load the project to notes. A server that crashes
 after running for at least 30 seconds restarts by itself; one that crashes
 sooner restarts when you next open a file in its language.
+
+## Theme
+
+Semantic highlighting follows `theme.json` in Craft's configuration folder,
+normally `~/.config/craft/theme.json`, or else Craft's own theme,
+[`src/theme.json`](src/theme.json), a good start for your own. A change shows as
+soon as the file is saved. The file maps selectors to styles:
+
+```json
+{
+  "function, method": { "light": "#1c71d8", "dark": "#62a0ea" },
+  "struct, enum": { "light": "#218787", "dark": "#5bc8af", "bold": true },
+  "*.mutable": { "underline": true },
+  "*.deprecated": { "strikethrough": true }
+}
+```
+
+A selector names a token type, or `*` for any, then any modifiers, each after a
+dot; several, separated by commas, share a style. Types and modifiers are those
+servers send: the protocol's own, such as `function`, `variable` and
+`readonly`, and each server's, such as rust-analyzer's `lifetime` and `unsafe`.
+A style can give `light` and `dark` colors, as names, hex or `rgb()`, and set
+`bold`, `italic`, `underline` and `strikethrough`. Each comes from the most
+specific rule that sets it, the one naming the most of what the token is, and
+of those equally specific, the last. What no rule styles keeps its syntax
+highlighting.
+
+If the file cannot be used, the status button says why, and the theme in use
+stays.
 
 ## Behaviour
 
@@ -131,12 +164,15 @@ sooner restarts when you next open a file in its language.
 
 ## Source
 
-| File               | Contents                                                                    |
-| ------------------ | --------------------------------------------------------------------------- |
-| `src/main.rs`      | Application: startup, and routing folders and files                         |
-| `src/window.rs`    | Project window: layout, tabs, actions, close prompts                        |
-| `src/editor.rs`    | One open file: source view, loading and saving                              |
-| `src/file_tree.rs` | Sidebar tree: loaded lazily, updated live                                   |
-| `src/lsp/`         | Language servers: environments, processes, files, hover, completion, status |
-| `package.nix`      | Nix package                                                                 |
-| `flake.nix`        | Nix flake: package, development shell and formatter                         |
+| File               | Contents                                                                                  |
+| ------------------ | ----------------------------------------------------------------------------------------- |
+| `src/main.rs`      | Application: startup, and routing folders and files                                       |
+| `src/window.rs`    | Project window: layout, tabs, actions, close prompts                                      |
+| `src/editor.rs`    | One open file: source view, loading and saving                                            |
+| `src/file_tree.rs` | Sidebar tree: loaded lazily, updated live                                                 |
+| `src/log_view.rs`  | A tool's log, read in a tab                                                               |
+| `src/theme.rs`     | Theme: `theme.json`, read and kept up with                                                |
+| `src/theme.json`   | Craft's own theme                                                                         |
+| `src/lsp/`         | Language servers: environments, processes, files, hover, completion, highlighting, status |
+| `package.nix`      | Nix package                                                                               |
+| `flake.nix`        | Nix flake: package, development shell and formatter                                       |

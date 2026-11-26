@@ -44,40 +44,88 @@ impl Encoding {
     /// The iterator at `position`, clamped to the buffer, its lines and their
     /// characters.
     pub fn iter_at(self, buffer: &impl IsA<gtk::TextBuffer>, position: Position) -> gtk::TextIter {
-        let line = i32::try_from(position.line).unwrap_or(i32::MAX);
-        let Some(mut iter) = buffer.iter_at_line(line) else {
-            return buffer.end_iter();
-        };
-        let mut end = iter;
-        if !end.ends_line() {
-            end.forward_to_line_end();
+        Cursor::new(buffer.upcast_ref(), self).iter_at(position)
+    }
+
+    /// The length of `c` in this encoding's units.
+    fn width(self, c: char) -> usize {
+        match self {
+            Self::Utf8 => c.len_utf8(),
+            Self::Utf16 => c.len_utf16(),
         }
-        let index = byte_index(&iter.slice(&end), self, position.character);
-        iter.set_line_index(i32::try_from(index).unwrap_or(i32::MAX));
+    }
+}
+
+/// Finds iterators at positions in a buffer, as [`Encoding::iter_at`] does,
+/// reading each line's text once for positions given in order through it.
+pub struct Cursor<'a> {
+    buffer: &'a gtk::TextBuffer,
+    encoding: Encoding,
+    /// The line last read.
+    line: Option<Line>,
+}
+
+/// A line of text, and how far into it the cursor is.
+struct Line {
+    number: u32,
+    start: gtk::TextIter,
+    text: String,
+    /// How far in, in bytes and in the encoding's units.
+    at: (usize, usize),
+}
+
+impl<'a> Cursor<'a> {
+    pub fn new(buffer: &'a gtk::TextBuffer, encoding: Encoding) -> Self {
+        Self {
+            buffer,
+            encoding,
+            line: None,
+        }
+    }
+
+    /// The iterator at `position`, clamped to the buffer, its lines and their
+    /// characters.
+    pub fn iter_at(&mut self, position: Position) -> gtk::TextIter {
+        let character = position.character as usize;
+        let line = match &mut self.line {
+            Some(line) if line.number == position.line && line.at.1 <= character => line,
+            _ => {
+                let number = i32::try_from(position.line).unwrap_or(i32::MAX);
+                let Some(start) = self.buffer.iter_at_line(number) else {
+                    return self.buffer.end_iter();
+                };
+                let mut end = start;
+                if !end.ends_line() {
+                    end.forward_to_line_end();
+                }
+                self.line.insert(Line {
+                    number: position.line,
+                    start,
+                    text: start.slice(&end).into(),
+                    at: (0, 0),
+                })
+            }
+        };
+        line.at = advance(&line.text, self.encoding, line.at, character);
+        let mut iter = line.start;
+        iter.set_line_index(i32::try_from(line.at.0).unwrap_or(i32::MAX));
         iter
     }
 }
 
-/// The byte index in `line` of the character `character` code units in,
-/// rounded down to a character boundary and clamped to the line.
-fn byte_index(line: &str, encoding: Encoding, character: u32) -> usize {
-    let character = character as usize;
-    match encoding {
-        Encoding::Utf8 => (0..=character.min(line.len()))
-            .rev()
-            .find(|&index| line.is_char_boundary(index))
-            .unwrap_or(0),
-        Encoding::Utf16 => {
-            let mut units = 0;
-            for (index, c) in line.char_indices() {
-                units += c.len_utf16();
-                if units > character {
-                    return index;
-                }
-            }
-            line.len()
+/// Where `character` code units into `line` is, onward from `at`, in bytes
+/// and units: rounded down to a character boundary and clamped to the line.
+fn advance(line: &str, encoding: Encoding, at: (usize, usize), character: usize) -> (usize, usize) {
+    let (mut bytes, mut units) = at;
+    for c in line[bytes..].chars() {
+        let width = encoding.width(c);
+        if units + width > character {
+            break;
         }
+        bytes += c.len_utf8();
+        units += width;
     }
+    (bytes, units)
 }
 
 fn utf16_len(text: &str) -> u32 {
@@ -148,6 +196,10 @@ mod tests {
     // Two bytes in UTF-8 and one unit in UTF-16, then four bytes and two units.
     const LINE: &str = "aé😀b";
 
+    fn byte_index(line: &str, encoding: Encoding, character: usize) -> usize {
+        advance(line, encoding, (0, 0), character).0
+    }
+
     #[test]
     fn utf8_indices_round_down_to_characters() {
         let indices: Vec<_> = (0..=9)
@@ -162,6 +214,14 @@ mod tests {
             .map(|c| byte_index(LINE, Encoding::Utf16, c))
             .collect();
         assert_eq!(indices, [0, 1, 3, 3, 7, 8, 8]);
+    }
+
+    #[test]
+    fn advancing_goes_on_from_where_it_was() {
+        let at = advance(LINE, Encoding::Utf16, (0, 0), 2);
+        assert_eq!(at, (3, 2));
+        assert_eq!(advance(LINE, Encoding::Utf16, at, 4), (7, 4));
+        assert_eq!(advance(LINE, Encoding::Utf8, (1, 1), 100), (8, 8));
     }
 
     #[test]

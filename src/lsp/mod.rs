@@ -8,6 +8,7 @@ mod document;
 mod environment;
 mod hover;
 mod position;
+mod semantic;
 mod status;
 
 use std::cell::RefCell;
@@ -29,6 +30,10 @@ pub use status::SHOW_LOG;
 use status::{Level, Status};
 
 use crate::editor::Editor;
+use crate::theme;
+
+/// How the status names the theme, when it has something to say of it.
+const THEME: &str = "theme.json";
 
 /// A project's environment, loaded once for all of its servers.
 type SharedEnvironment = Shared<LocalBoxFuture<'static, Rc<Environment>>>;
@@ -170,16 +175,40 @@ pub struct Servers {
     /// The environment servers run in, once one needs it.
     environment: RefCell<Option<SharedEnvironment>>,
     status: Rc<Status>,
+    /// Reports on the theme as it changes.
+    _theme: theme::Watch,
 }
 
 impl Default for Servers {
     fn default() -> Self {
+        let status = Status::new();
+        let report = {
+            let status = Rc::downgrade(&status);
+            move || {
+                if let Some(status) = status.upgrade() {
+                    report_theme(&status);
+                }
+            }
+        };
+        // As the theme may have failed to load before this window opened.
+        report();
         Self {
             root: RefCell::default(),
             clients: RefCell::default(),
             environment: RefCell::default(),
-            status: Status::new(),
+            status,
+            _theme: theme::watch(report),
         }
+    }
+}
+
+/// Tells `status` why `theme.json` is not in use, or that it is now, after
+/// not being.
+fn report_theme(status: &Status) {
+    match theme::error() {
+        Some(error) => status.log(THEME, Level::Error, &error),
+        None if status.log_of(THEME).is_some() => status.started(THEME, "Loaded"),
+        None => {}
     }
 }
 
