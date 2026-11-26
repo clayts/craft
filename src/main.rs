@@ -14,12 +14,14 @@ use window::Window;
 const APP_ID: &str = "io.github.clayts.Craft";
 
 fn main() -> glib::ExitCode {
+    // Each run of Craft is its own, with its own windows and the environment
+    // it was started in.
     let app = adw::Application::builder()
         .application_id(APP_ID)
-        .flags(gio::ApplicationFlags::HANDLES_OPEN)
+        .flags(gio::ApplicationFlags::HANDLES_OPEN | gio::ApplicationFlags::NON_UNIQUE)
         .build();
     app.connect_startup(startup);
-    app.connect_activate(|app| active_window(app).present());
+    app.connect_activate(|app| Window::new(app).present());
     app.connect_open(|app, files, _hint| open(app, files));
     app.run()
 }
@@ -35,50 +37,26 @@ fn startup(app: &adw::Application) {
     app.set_accels_for_action("app.quit", &["<Control>q"]);
 }
 
-/// Opens each directory as a project, then the files, in order, in the last
-/// project's window or else the active one.
+/// Opens each directory as a project in a window of its own, then the files
+/// as tabs, in order, in the last of those windows, or else in a window of
+/// their own.
 fn open(app: &adw::Application, files: &[gio::File]) {
     let (dirs, files): (Vec<_>, Vec<_>) = files.iter().cloned().partition(|file| {
         file.query_file_type(gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE)
             == gio::FileType::Directory
     });
-    let mut target = None;
+    let mut last = None;
     for dir in &dirs {
-        let window = project_window(app, dir);
+        let window = Window::new(app);
+        window.set_project(dir);
         window.present();
-        target = Some(window);
+        last = Some(window);
     }
     if !files.is_empty() {
-        let window = target.unwrap_or_else(|| active_window(app));
+        let window = last.unwrap_or_else(|| Window::new(app));
         window.open_files(files);
         window.present();
     }
-}
-
-/// The active window, or a new one if there is none.
-fn active_window(app: &adw::Application) -> Window {
-    app.active_window()
-        .and_downcast()
-        .unwrap_or_else(|| Window::new(app))
-}
-
-/// The window showing `dir`: an existing one, the active one if it has no
-/// project yet, or a new one.
-fn project_window(app: &adw::Application, dir: &gio::File) -> Window {
-    let mut windows = app
-        .windows()
-        .into_iter()
-        .filter_map(|w| w.downcast::<Window>().ok());
-    if let Some(window) = windows.find(|w| w.project().is_some_and(|p| p.equal(dir))) {
-        return window;
-    }
-    let window = app
-        .active_window()
-        .and_downcast::<Window>()
-        .filter(|w| w.project().is_none())
-        .unwrap_or_else(|| Window::new(app));
-    window.set_project(dir);
-    window
 }
 
 /// The name of `file` as shown to the user.

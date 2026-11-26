@@ -44,10 +44,11 @@ formats the Nix files.
 craft [FOLDER | FILE]...
 ```
 
-Each folder opens as a project in its own window. Files open as tabs, in the
-window of the last folder given, or else the active window. A file that does
-not exist yet is created when you first save it. Craft runs as a single
-instance, so running it again opens into the windows already on screen.
+Each folder opens as a project in a window of its own. Files open as tabs in
+the window of the last folder given, or else in a window of their own. A file
+that does not exist yet is created when you first save it. Each run of Craft is
+separate, with its own windows and the environment it was started in. Opening a
+folder from a window that has one already opens it in a new window.
 
 ## Keyboard shortcuts
 

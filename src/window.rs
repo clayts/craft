@@ -209,12 +209,12 @@ glib::wrapper! {
 }
 
 impl Window {
-    pub fn new(app: &adw::Application) -> Self {
+    pub fn new(app: &impl IsA<gtk::Application>) -> Self {
         glib::Object::builder().property("application", app).build()
     }
 
     /// The directory shown in the sidebar.
-    pub fn project(&self) -> Option<gio::File> {
+    fn project(&self) -> Option<gio::File> {
         self.imp().project.borrow().clone()
     }
 
@@ -328,10 +328,16 @@ impl Window {
             .select_folder(Some(self), gio::Cancellable::NONE, move |result| {
                 let Some(win) = win.upgrade() else { return };
                 match result {
-                    Ok(folder) => win
-                        .application()
-                        .expect("windows belong to the app")
-                        .open(&[folder], ""),
+                    Ok(folder) => {
+                        // Here, unless this window has a project already.
+                        let window = if win.project().is_none() {
+                            win
+                        } else {
+                            Self::new(&win.application().expect("windows belong to the app"))
+                        };
+                        window.set_project(&folder);
+                        window.present();
+                    }
                     Err(err) if !err.matches(gtk::DialogError::Dismissed) => {
                         win.toast(&format!("Could not open folder: {}", err.message()));
                     }
