@@ -122,9 +122,9 @@ language.
 ## Theme
 
 Semantic highlighting follows `theme.json` in Craft's configuration folder,
-normally `~/.config/craft/theme.json`, or else Craft's own theme,
-[`src/theme.json`](src/theme.json), a good start for your own. A change shows as
-soon as the file is saved. The file maps selectors to styles:
+normally `~/.config/craft/theme.json`, as read when Craft starts, or else
+Craft's own theme, [`src/theme.json`](src/theme.json), a good start for your
+own. The file maps selectors to styles:
 
 ```json
 {
@@ -145,8 +145,8 @@ specific rule that sets it, the one naming the most of what the token is, and
 of those equally specific, the last. What no rule styles keeps its syntax
 highlighting.
 
-If the file cannot be used, the status button says why, and the theme in use
-stays.
+If the file cannot be used, the status button says why, and Craft's own theme
+stands in for it.
 
 ## Behaviour
 
@@ -171,7 +171,7 @@ stays.
 | `src/window.rs`    | Project window: layout, tabs, actions, close prompts                                      |
 | `src/editor.rs`    | One open file: source view, loading and saving                                            |
 | `src/file_tree.rs` | Sidebar tree: loaded lazily, updated live                                                 |
-| `src/theme.rs`     | Theme: `theme.json`, read and kept up with                                                |
+| `src/theme.rs`     | Theme: `theme.json`, read and resolved                                                    |
 | `src/theme.json`   | Craft's own theme                                                                         |
 | `src/lsp/`         | Language servers: environments, processes, files, hover, completion, highlighting, status |
 | `package.nix`      | Nix package                                                                               |

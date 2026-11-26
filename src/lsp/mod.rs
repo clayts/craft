@@ -31,7 +31,7 @@ use status::{Level, Status};
 use crate::editor::Editor;
 use crate::theme;
 
-/// How the status names the theme, when it has something to say of it.
+/// How the status names the theme, should `theme.json` not be usable.
 const THEME: &str = "theme.json";
 
 /// A project's environment, loaded once for all of its servers.
@@ -174,40 +174,20 @@ pub struct Servers {
     /// The environment servers run in, once one needs it.
     environment: RefCell<Option<SharedEnvironment>>,
     status: Rc<Status>,
-    /// Reports on the theme as it changes.
-    _theme: theme::Watch,
 }
 
 impl Default for Servers {
     fn default() -> Self {
         let status = Status::new();
-        let report = {
-            let status = Rc::downgrade(&status);
-            move || {
-                if let Some(status) = status.upgrade() {
-                    report_theme(&status);
-                }
-            }
-        };
-        // As the theme may have failed to load before this window opened.
-        report();
+        if let Some(error) = theme::error() {
+            status.log(THEME, Level::Error, error);
+        }
         Self {
             root: RefCell::default(),
             clients: RefCell::default(),
             environment: RefCell::default(),
             status,
-            _theme: theme::watch(report),
         }
-    }
-}
-
-/// Tells `status` why `theme.json` is not in use, or that it is now, after
-/// not being.
-fn report_theme(status: &Status) {
-    match theme::error() {
-        Some(error) => status.log(THEME, Level::Error, &error),
-        None if status.knows(THEME) => status.started(THEME, "Loaded"),
-        None => {}
     }
 }
 

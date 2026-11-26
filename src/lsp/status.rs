@@ -7,14 +7,9 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
-use std::time::Duration;
 
 use adw::prelude::*;
 use gtk::{glib, pango};
-
-/// How long a tool shows as at work after its work ends, in case more
-/// begins, as it does between the stages of a server's start.
-const LINGER: Duration = Duration::from_millis(500);
 
 /// How many entries each tool's log keeps, dropping the oldest.
 const LOG_LENGTH: u32 = 100;
@@ -60,8 +55,6 @@ struct Tool {
     icon: Icon,
     /// Work under way, in the order it began.
     works: Vec<Work>,
-    /// Pending while the tool shows as at work for a moment after its work.
-    linger: Option<glib::SourceId>,
     /// Whether an error has been logged since the tool last started afresh.
     failed: bool,
     /// What the tool said, an entry each, oldest first.
@@ -183,11 +176,6 @@ impl Status {
         &self.button
     }
 
-    /// Whether the tool named `tool` has come up.
-    pub fn knows(&self, tool: &str) -> bool {
-        self.tools.borrow().iter().any(|known| known.name == tool)
-    }
-
     /// Logs `message` from `tool`, unless it says nothing, or what the tool
     /// last said. An error shows on the tool's icon until it starts afresh.
     pub fn log(&self, tool: &str, level: Level, message: &str) {
@@ -233,19 +221,12 @@ impl Status {
         let index = self.tool(tool);
         let work = self.next_work.get();
         self.next_work.set(work + 1);
-        {
-            let mut tools = self.tools.borrow_mut();
-            let tool = &mut tools[index];
-            if let Some(linger) = tool.linger.take() {
-                linger.remove();
-            }
-            tool.works.push(Work {
-                id: work,
-                title: title.to_owned(),
-                message: None,
-                percentage: None,
-            });
-        }
+        self.tools.borrow_mut()[index].works.push(Work {
+            id: work,
+            title: title.to_owned(),
+            message: None,
+            percentage: None,
+        });
         self.refresh(index);
         Busy {
             status: Rc::downgrade(self),
@@ -280,7 +261,6 @@ impl Status {
             row,
             icon,
             works: Vec::new(),
-            linger: None,
             failed: false,
             log: gtk::Box::builder()
                 .orientation(gtk::Orientation::Vertical)
@@ -338,26 +318,11 @@ impl Status {
         self.page.quiet.set_visible(work.is_empty() && !said);
     }
 
-    /// Ends the work that `busy` stood for, the tool showing as at work a
-    /// moment longer if that was the last of its work.
-    fn end(self: &Rc<Self>, busy: &Busy) {
-        {
-            let mut tools = self.tools.borrow_mut();
-            let tool = &mut tools[busy.tool];
-            tool.works.retain(|work| work.id != busy.work);
-            if tool.works.is_empty() {
-                let (status, index) = (Rc::downgrade(self), busy.tool);
-                let linger = glib::timeout_add_local_once(LINGER, move || {
-                    if let Some(status) = status.upgrade() {
-                        status.tools.borrow_mut()[index].linger = None;
-                        status.refresh(index);
-                    }
-                });
-                if let Some(earlier) = tool.linger.replace(linger) {
-                    earlier.remove();
-                }
-            }
-        }
+    /// Ends the work that `busy` stood for.
+    fn end(&self, busy: &Busy) {
+        self.tools.borrow_mut()[busy.tool]
+            .works
+            .retain(|work| work.id != busy.work);
         self.refresh(busy.tool);
     }
 }
@@ -463,7 +428,7 @@ impl Drop for Busy {
 
 impl Tool {
     fn state(&self) -> State {
-        if !self.works.is_empty() || self.linger.is_some() {
+        if !self.works.is_empty() {
             State::Busy
         } else if self.failed {
             State::Failed

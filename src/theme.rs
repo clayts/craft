@@ -1,6 +1,6 @@
 //! How each kind of token that language servers pick out looks: as
-//! `theme.json` in Craft's configuration folder says, or else as Craft's own
-//! theme does, in light and in dark.
+//! `theme.json` in Craft's configuration folder says, read when Craft starts,
+//! or else as Craft's own theme does, in light and in dark.
 //!
 //! A theme maps selectors to styles. A selector is a token type, or `*` for
 //! any, then any modifiers, each after a dot, as in `variable.mutable` or
@@ -10,28 +10,37 @@
 //! most specific rule that sets it, the one naming the most of what the
 //! token is, and of those equally specific, the last.
 
-use std::cell::RefCell;
 use std::fmt;
 use std::io;
-use std::path::{Path, PathBuf};
-use std::rc::{Rc, Weak};
+use std::path::Path;
+use std::sync::LazyLock;
 
-use adw::prelude::*;
 use gtk::glib::translate::IntoGlib;
-use gtk::{gdk, gio, glib, pango};
+use gtk::prelude::*;
+use gtk::{gdk, glib, pango};
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
 /// Craft's own theme.
 const DEFAULT: &str = include_str!("theme.json");
 
+/// The theme in use, and why `theme.json` is not it, if it is there but could
+/// not be.
+static CURRENT: LazyLock<(Theme, Option<String>)> = LazyLock::new(|| {
+    let path = glib::user_config_dir().join("craft").join("theme.json");
+    match read(&path) {
+        Ok(theme) => (theme, None),
+        Err(error) => (default(), Some(error)),
+    }
+});
+
 /// A theme's rules, in the order written.
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub struct Theme {
     rules: Vec<Rule>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 struct Rule {
     /// The token type, or `None` for any.
     kind: Option<String>,
@@ -40,7 +49,7 @@ struct Rule {
 }
 
 /// How a rule styles text, in what it sets.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Style {
     light: Option<Color>,
@@ -51,7 +60,7 @@ struct Style {
     strikethrough: Option<bool>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 struct Color(gdk::RGBA);
 
 /// How a kind of token looks, light or dark, in what the theme sets.
@@ -196,107 +205,16 @@ impl<'de> Deserialize<'de> for Color {
     }
 }
 
-thread_local! {
-    static CURRENT: Current = Current::new();
-}
-
-/// The theme in use, kept up to date with `theme.json`.
-struct Current {
-    theme: RefCell<Theme>,
-    /// Why `theme.json` is not in use, though there.
-    error: RefCell<Option<String>>,
-    watchers: RefCell<Vec<Weak<dyn Fn()>>>,
-    _monitor: Option<gio::FileMonitor>,
-}
-
-impl Current {
-    fn new() -> Self {
-        let path = path();
-        let (theme, error) = match read(&path) {
-            Ok(theme) => (theme, None),
-            Err(error) => (default(), Some(error)),
-        };
-        let monitor = gio::File::for_path(&path)
-            .monitor_file(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE)
-            .ok();
-        if let Some(monitor) = &monitor {
-            monitor.connect_changed(|_, _, _, event| {
-                // Once written in full, or when moved, made or deleted.
-                if event != gio::FileMonitorEvent::Changed {
-                    reload();
-                }
-            });
-        }
-        adw::StyleManager::default().connect_dark_notify(|_| notify());
-        Self {
-            theme: RefCell::new(theme),
-            error: RefCell::new(error),
-            watchers: RefCell::default(),
-            _monitor: monitor,
-        }
-    }
-}
-
-/// How a token of type `kind` with `modifiers` looks now.
+/// How a token of type `kind` with `modifiers` looks now, in light or dark as
+/// the style is.
 pub fn look(kind: &str, modifiers: &[&str]) -> Look {
     let dark = adw::StyleManager::default().is_dark();
-    CURRENT.with(|current| current.theme.borrow().look(kind, modifiers, dark))
+    CURRENT.0.look(kind, modifiers, dark)
 }
 
 /// Why `theme.json` is not in use, if it is there but could not be.
-pub fn error() -> Option<String> {
-    CURRENT.with(|current| current.error.borrow().clone())
-}
-
-/// Has `watcher` called whenever how tokens look may have changed, with the
-/// theme or between light and dark, while the result lives.
-pub fn watch(watcher: impl Fn() + 'static) -> Watch {
-    let watcher: Rc<dyn Fn()> = Rc::new(watcher);
-    CURRENT.with(|current| current.watchers.borrow_mut().push(Rc::downgrade(&watcher)));
-    Watch { _watcher: watcher }
-}
-
-/// Keeps a watcher called while it lives.
-pub struct Watch {
-    _watcher: Rc<dyn Fn()>,
-}
-
-/// Reads `theme.json` again, telling watchers if the theme or why it is not
-/// in use changed. A theme that cannot be used leaves the last one in place.
-fn reload() {
-    let changed = CURRENT.with(|current| {
-        let (theme, error) = match read(&path()) {
-            Ok(theme) => (Some(theme), None),
-            Err(error) => (None, Some(error)),
-        };
-        let mut changed = *current.error.borrow() != error;
-        current.error.replace(error);
-        if let Some(theme) = theme
-            && *current.theme.borrow() != theme
-        {
-            current.theme.replace(theme);
-            changed = true;
-        }
-        changed
-    });
-    if changed {
-        notify();
-    }
-}
-
-fn notify() {
-    let watchers: Vec<Rc<dyn Fn()>> = CURRENT.with(|current| {
-        let mut watchers = current.watchers.borrow_mut();
-        watchers.retain(|watcher| watcher.strong_count() > 0);
-        watchers.iter().filter_map(Weak::upgrade).collect()
-    });
-    for watcher in watchers {
-        watcher();
-    }
-}
-
-fn path() -> PathBuf {
-    glib::user_config_dir().join("craft").join("theme.json")
+pub fn error() -> Option<&'static str> {
+    CURRENT.1.as_deref()
 }
 
 /// The theme in the file at `path`, or Craft's own if there is none there,

@@ -44,7 +44,9 @@ pub struct Highlighter {
     timer: RefCell<Option<glib::SourceId>>,
     /// The request under way.
     request: RefCell<Option<glib::JoinHandle<()>>>,
-    _theme: theme::Watch,
+    /// Restyles the tokens as the style turns light or dark, the theme
+    /// having colors for each.
+    restyler: Option<glib::SignalHandlerId>,
 }
 
 /// Tokens as servers give them: five numbers each, for where the token is
@@ -102,7 +104,12 @@ impl Request for FullDelta {
 
 impl Highlighter {
     pub fn new(document: Weak<Document>) -> Self {
-        let watched = document.clone();
+        let weak = document.clone();
+        let restyler = adw::StyleManager::default().connect_dark_notify(move |_| {
+            if let Some(document) = weak.upgrade() {
+                document.highlighter().restyle(&document);
+            }
+        });
         Self {
             document,
             tokens: RefCell::default(),
@@ -112,11 +119,7 @@ impl Highlighter {
             edited: RefCell::default(),
             timer: RefCell::default(),
             request: RefCell::default(),
-            _theme: theme::watch(move || {
-                if let Some(document) = watched.upgrade() {
-                    document.highlighter().restyle(&document);
-                }
-            }),
+            restyler: Some(restyler),
         }
     }
 
@@ -333,7 +336,7 @@ impl Highlighter {
         tag
     }
 
-    /// Shows the tokens styled anew, as the theme or the mode has changed.
+    /// Shows the tokens styled anew, as the style has turned light or dark.
     fn restyle(&self, document: &Document) {
         self.forget_tags(document.buffer());
         self.highlight(document);
@@ -411,6 +414,14 @@ fn iter_at_line(buffer: &sourceview::Buffer, line: u32) -> gtk::TextIter {
         .ok()
         .and_then(|line| buffer.iter_at_line(line))
         .unwrap_or_else(|| buffer.end_iter())
+}
+
+impl Drop for Highlighter {
+    fn drop(&mut self) {
+        if let Some(restyler) = self.restyler.take() {
+            adw::StyleManager::default().disconnect(restyler);
+        }
+    }
 }
 
 impl Tokens {
