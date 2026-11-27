@@ -53,6 +53,11 @@ pub struct Document {
     /// Whether the server has the document, which it lacks while starting.
     opened: Cell<bool>,
     version: Cell<i32>,
+    /// How many user actions, undos and redos are under way, whose edits a
+    /// server that takes whole texts hears of together, once they are done.
+    holds: Cell<u32>,
+    /// Whether the text has changed since such a server last had it.
+    unsent: Cell<bool>,
     /// The edits since the last version the server published diagnostics
     /// for, with the version each made, to carry its later diagnostics
     /// forward.
@@ -68,7 +73,26 @@ impl Document {
         let buffer = editor.buffer();
         let view = editor.view();
         let document = Rc::new_cyclic(|this: &Weak<Self>| {
-            let (insert, delete, changed) = (this.clone(), this.clone(), this.clone());
+            let (insert, delete) = (this.clone(), this.clone());
+            // Handlers calling a method of the document, while it lives,
+            // before a signal's own handler, or after it.
+            let on = |method: fn(&Self)| {
+                let this = this.clone();
+                move |_: &sourceview::Buffer| {
+                    if let Some(document) = this.upgrade() {
+                        method(&document);
+                    }
+                }
+            };
+            let after = |method: fn(&Self)| {
+                let this = this.clone();
+                move |_: &[glib::Value]| {
+                    if let Some(document) = this.upgrade() {
+                        method(&document);
+                    }
+                    None
+                }
+            };
             let handlers = vec![
                 buffer.connect_insert_text(move |buffer, iter, text| {
                     if let Some(document) = insert.upgrade() {
@@ -82,11 +106,15 @@ impl Document {
                         document.edited(start, end, "");
                     }
                 }),
-                buffer.connect_changed(move |_| {
-                    if let Some(document) = changed.upgrade() {
-                        document.replaced();
-                    }
-                }),
+                buffer.connect_changed(on(Self::replaced)),
+                buffer.connect_begin_user_action(on(Self::hold)),
+                buffer.connect_end_user_action(on(Self::release)),
+                // Undoing and redoing edit outside user actions, in these
+                // signals' own handlers.
+                buffer.connect_undo(on(Self::hold)),
+                buffer.connect_redo(on(Self::hold)),
+                buffer.connect_local("undo", true, after(Self::release)),
+                buffer.connect_local("redo", true, after(Self::release)),
             ];
             Self {
                 client: Rc::clone(client),
@@ -105,6 +133,8 @@ impl Document {
                 handlers,
                 opened: Cell::new(false),
                 version: Cell::new(0),
+                holds: Cell::new(0),
+                unsent: Cell::new(false),
                 edits: RefCell::default(),
                 diagnostics: RefCell::default(),
             }
@@ -240,9 +270,14 @@ impl Document {
         }
     }
 
-    /// Sends the text after an edit, for servers that take whole texts.
+    /// Sends the text after an edit, for servers that take whole texts: at
+    /// once, or once the user action, undo or redo it is part of is done.
     fn replaced(&self) {
         if self.opened.get() && self.sync_kind() == Some(TextDocumentSyncKind::FULL) {
+            if self.holds.get() > 0 {
+                self.unsent.set(true);
+                return;
+            }
             // Whole texts do not say how positions moved.
             self.edits.borrow_mut().clear();
             self.change(TextDocumentContentChangeEvent {
@@ -250,6 +285,21 @@ impl Document {
                 range_length: None,
                 text: self.text(),
             });
+        }
+    }
+
+    fn hold(&self) {
+        self.holds.set(self.holds.get() + 1);
+    }
+
+    /// Sends the text, if a server that takes whole texts lacks it, once
+    /// nothing holds it back.
+    fn release(&self) {
+        // Saturating, for a document made amid a user action, undo or redo.
+        let holds = self.holds.get().saturating_sub(1);
+        self.holds.set(holds);
+        if holds == 0 && self.unsent.take() {
+            self.replaced();
         }
     }
 
