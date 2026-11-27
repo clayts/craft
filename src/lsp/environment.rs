@@ -18,10 +18,10 @@ use super::status::{Level, Status};
 /// The program, which is also the tool's name.
 const DIRENV: &str = "direnv";
 
-/// How direnv regards an `.envrc`.
+/// How direnv regards an `.envrc`: allowed, or blocked until allowed. One
+/// that is denied it passes over.
 const ALLOWED: u8 = 0;
 const BLOCKED: u8 = 1;
-const DENIED: u8 = 2;
 
 #[derive(Debug, Default, PartialEq)]
 pub struct Environment {
@@ -63,18 +63,12 @@ impl Environment {
         let busy = (allowed == Some(ALLOWED)).then(|| status.busy(DIRENV, "Loading environment"));
         // Without an `.envrc` too, to undo that of any folder Craft was
         // started in.
-        let (json, said) = run(dir, ["export", "json"])
+        let json = run(dir, ["export", "json"])
             .await
             .map_err(|err| fail(&err))?;
         drop(busy);
         let environment = Self::parse(&json).map_err(|err| fail(&err))?;
-        // direnv says nothing of an environment already in effect.
-        let loaded = match allowed {
-            Some(ALLOWED) => format!("Loaded environment\n{said}"),
-            Some(DENIED) => ".envrc denied".to_owned(),
-            _ => String::new(),
-        };
-        status.started(DIRENV, &loaded);
+        status.started(DIRENV);
         Ok(environment)
     }
 
@@ -125,7 +119,7 @@ impl Environment {
 /// How direnv regards the `.envrc` it finds for `dir`, the folder's own or
 /// else its nearest parent's, if it finds one.
 async fn allowed(dir: &Path) -> Result<Option<u8>, String> {
-    let (json, _) = run(dir, ["status", "--json"]).await?;
+    let json = run(dir, ["status", "--json"]).await?;
     parse_allowed(&json).map_err(|err| err.to_string())
 }
 
@@ -135,9 +129,9 @@ fn parse_allowed(json: &str) -> serde_json::Result<Option<u8>> {
     Option::deserialize(&status["state"]["foundRC"]["allowed"])
 }
 
-/// Runs `direnv {command} {option}` in `dir`, for what it prints and, in
-/// plain text, what it says; or, if it fails, why.
-async fn run(dir: &Path, [command, option]: [&str; 2]) -> Result<(glib::GString, String), String> {
+/// Runs `direnv {command} {option}` in `dir`, for what it prints; or, if it
+/// fails, why, as it says in plain text.
+async fn run(dir: &Path, [command, option]: [&str; 2]) -> Result<glib::GString, String> {
     let launcher = gio::SubprocessLauncher::new(
         gio::SubprocessFlags::STDOUT_PIPE | gio::SubprocessFlags::STDERR_PIPE,
     );
@@ -149,11 +143,10 @@ async fn run(dir: &Path, [command, option]: [&str; 2]) -> Result<(glib::GString,
         .communicate_utf8_future(None)
         .await
         .map_err(|err| err.to_string())?;
-    let said = said(stderr.as_deref().unwrap_or_default());
     if process.is_successful() {
-        Ok((stdout.unwrap_or_default(), said))
+        Ok(stdout.unwrap_or_default())
     } else {
-        Err(said)
+        Err(said(stderr.as_deref().unwrap_or_default()))
     }
 }
 
@@ -207,7 +200,7 @@ mod tests {
     fn reads_how_direnv_regards_the_envrc() {
         let json = r#"{"config": {}, "state": {
             "foundRC": {"allowed": 2, "path": "/a/.envrc"}, "loadedRC": null}}"#;
-        assert_eq!(parse_allowed(json).unwrap(), Some(DENIED));
+        assert_eq!(parse_allowed(json).unwrap(), Some(2));
         let json = r#"{"state": {"foundRC": null, "loadedRC": null}}"#;
         assert_eq!(parse_allowed(json).unwrap(), None);
     }

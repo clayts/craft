@@ -96,11 +96,9 @@ impl Status {
         }
     }
 
-    /// Logs `message` from `tool`, if it says anything, as the tool starts
-    /// afresh, so that its past errors no longer show.
-    pub fn started(&self, tool: &str, message: &str) {
+    /// Forgets `tool`'s errors, as it has started afresh.
+    pub fn started(&self, tool: &str) {
         self.errors.borrow_mut().retain(|(own, _)| own != tool);
-        self.log(tool, Level::Info, message);
         self.refresh();
     }
 

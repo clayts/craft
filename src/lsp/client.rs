@@ -357,10 +357,7 @@ impl Client {
                 self.notify::<notification::Initialized>(lsp_types::InitializedParams {});
                 self.state
                     .replace(State::Running(Box::new(result.capabilities)));
-                if let Some(launch) = &*self.launch.borrow() {
-                    let started = format!("Started\n{}", launch.program.display());
-                    self.status.started(self.name(), &started);
-                }
+                self.status.started(self.name());
                 for document in self.documents() {
                     document.open();
                 }
