@@ -5,8 +5,7 @@ GtkSourceView.
 
 Craft has a project file tree, tabs, find and replace, and language server
 support, and nothing else: no settings, git, AI, plugins, terminal or run
-commands. Find and replace, semantic highlighting and symbol search are not
-built yet.
+commands. Symbol search is not built yet.
 
 ## Building
 
@@ -52,18 +51,42 @@ folder from a window that has one already opens it in a new window.
 
 ## Keyboard shortcuts
 
-| Shortcut                             | Action           |
-| ------------------------------------ | ---------------- |
-| Ctrl+O                               | Open folder      |
-| Ctrl+S                               | Save             |
-| Ctrl+W                               | Close tab        |
-| Ctrl+Q                               | Quit             |
-| F9                                   | Toggle sidebar   |
-| F12                                  | Go to definition |
-| Ctrl+Space                           | Complete         |
-| Ctrl+Tab, Ctrl+Page Up/Down          | Switch tab       |
-| Alt+1…9                              | Go to tab        |
-| Ctrl+Shift+Page Up/Down              | Move tab         |
+| Shortcut                              | Action               |
+| ------------------------------------- | -------------------- |
+| Ctrl+O                                | Open folder          |
+| Ctrl+S                                | Save                 |
+| Ctrl+W                                | Close tab            |
+| Ctrl+Q                                | Quit                 |
+| F9                                    | Toggle sidebar       |
+| F12                                   | Go to definition     |
+| Ctrl+Space                            | Complete             |
+| Ctrl+F                                | Find                 |
+| Ctrl+H                                | Replace              |
+| Ctrl+G, Ctrl+Shift+G                  | Next, previous match |
+| Enter, Shift+Enter, in the find field | Next, previous match |
+| Escape, in the find bar               | Close the find bar   |
+| Ctrl+Tab, Ctrl+Page Up/Down           | Switch tab           |
+| Alt+1…9                               | Go to tab            |
+| Ctrl+Shift+Page Up/Down               | Move tab             |
+
+## Find and replace
+
+Ctrl+F opens a bar under the tabs to find text in the selected tab: what is
+selected, if it is on one line and not a match already, or else what the bar
+had. Each match is highlighted as you type, the first from the cursor on is
+selected, and the bar says which of how many it is. Enter and Shift+Enter, or
+Ctrl+G and Ctrl+Shift+G from anywhere, select the next and previous match,
+wrapping around. The buttons beside the count match case, match whole words,
+and read the text as a regular expression, whose mistakes the bar points out.
+
+Ctrl+H opens the bar to replace as well. Replace, or Enter in the replacement,
+replaces the selected match and selects the next; if the selection is not a
+match, it selects the next first, so you see what you replace. Replace All
+replaces every match, in one edit to undo. With regular expressions, `\0` in
+the replacement stands for the whole match, `\1` for its first group, and so
+on.
+
+The bar follows the selected tab, and keeps its text when closed.
 
 ## Language servers
 
@@ -168,6 +191,7 @@ Craft's own theme stands in for it.
 | `src/main.rs`      | Application: startup, and routing folders and files                                       |
 | `src/window.rs`    | Project window: layout, tabs, actions, close prompts                                      |
 | `src/editor.rs`    | One open file: source view, loading and saving                                            |
+| `src/search.rs`    | Find and replace bar                                                                      |
 | `src/file_tree.rs` | Sidebar tree: loaded lazily, updated live                                                 |
 | `src/theme.rs`     | Theme: `theme.json`, read and resolved                                                    |
 | `src/theme.json`   | Craft's own theme                                                                         |

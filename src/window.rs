@@ -17,6 +17,7 @@ mod imp {
     use super::editor;
     use crate::editor::Editor;
     use crate::lsp;
+    use crate::search::Search;
 
     #[derive(Default)]
     pub struct Window {
@@ -28,6 +29,7 @@ mod imp {
         pub(super) heading: adw::WindowTitle,
         pub(super) stack: gtk::Stack,
         pub(super) tabs: adw::TabView,
+        pub(super) search: Search,
         pub(super) servers: lsp::Servers,
     }
 
@@ -45,13 +47,26 @@ mod imp {
             klass.install_action("win.go-to-definition", None, |win, _, _| {
                 win.go_to_definition();
             });
+            klass.install_action("win.find", None, |win, _, _| win.imp().search.open(false));
+            klass.install_action("win.replace", None, |win, _, _| win.imp().search.open(true));
+            klass.install_action("win.find-next", None, |win, _, _| {
+                win.imp().search.find_next();
+            });
+            klass.install_action("win.find-previous", None, |win, _, _| {
+                win.imp().search.find_previous();
+            });
             let ctrl = gdk::ModifierType::CONTROL_MASK;
+            let shift = gdk::ModifierType::SHIFT_MASK;
             let none = gdk::ModifierType::empty();
             klass.add_binding_action(gdk::Key::o, ctrl, "win.open-folder");
             klass.add_binding_action(gdk::Key::s, ctrl, "win.save");
             klass.add_binding_action(gdk::Key::w, ctrl, "win.close-tab");
             klass.add_binding_action(gdk::Key::F9, none, "win.toggle-sidebar");
             klass.add_binding_action(gdk::Key::F12, none, "win.go-to-definition");
+            klass.add_binding_action(gdk::Key::f, ctrl, "win.find");
+            klass.add_binding_action(gdk::Key::h, ctrl, "win.replace");
+            klass.add_binding_action(gdk::Key::g, ctrl, "win.find-next");
+            klass.add_binding_action(gdk::Key::g, ctrl | shift, "win.find-previous");
         }
     }
 
@@ -98,6 +113,7 @@ mod imp {
             let content = adw::ToolbarView::new();
             content.add_top_bar(&header);
             content.add_top_bar(&adw::TabBar::builder().view(&self.tabs).build());
+            content.add_top_bar(&self.search);
             content.set_content(Some(&self.stack));
 
             self.split_view.set_sidebar(Some(&sidebar));
@@ -151,7 +167,10 @@ mod imp {
             self.tabs.connect_selected_page_notify(glib::clone!(
                 #[weak]
                 obj,
-                move |_| obj.update_title()
+                move |_| {
+                    obj.imp().search.set_editor(obj.current_editor());
+                    obj.update_title();
+                }
             ));
             self.tabs.connect_n_pages_notify(glib::clone!(
                 #[weak]
@@ -412,9 +431,17 @@ impl Window {
         let imp = self.imp();
         let has_tabs = imp.tabs.n_pages() > 0;
         let has_project = imp.project.borrow().is_some();
-        self.action_set_enabled("win.save", has_tabs);
-        self.action_set_enabled("win.close-tab", has_tabs);
-        self.action_set_enabled("win.go-to-definition", has_tabs);
+        for action in [
+            "win.save",
+            "win.close-tab",
+            "win.go-to-definition",
+            "win.find",
+            "win.replace",
+            "win.find-next",
+            "win.find-previous",
+        ] {
+            self.action_set_enabled(action, has_tabs);
+        }
         self.action_set_enabled("win.toggle-sidebar", has_project);
         imp.stack
             .set_visible_child_name(if has_tabs || has_project {

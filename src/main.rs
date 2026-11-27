@@ -3,6 +3,7 @@
 mod editor;
 mod file_tree;
 mod lsp;
+mod search;
 mod theme;
 mod window;
 
