@@ -123,6 +123,10 @@ Errors, warnings and notes are underlined, and stay in place as you type.
 Hovering shows their messages and the server's description of what is under
 the pointer.
 
+F12, or Go to Definition in the menu that right-clicking opens, goes to where
+what is at the cursor is defined, opening its file if need be. Right-clicking
+text moves the cursor to it first, unless it is selected.
+
 Completions appear as you type, or on Ctrl+Space, best matches first. Enter or
 Tab inserts the one selected, adding any import it needs, and Tab then moves
 through its fields, such as a function's arguments.

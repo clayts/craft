@@ -21,7 +21,7 @@ mod imp {
 
     use adw::prelude::*;
     use adw::subclass::prelude::*;
-    use gtk::{gio, glib};
+    use gtk::{gdk, gio, glib};
     use sourceview::prelude::*;
 
     use crate::display_name;
@@ -104,6 +104,40 @@ mod imp {
             let completion = view.completion();
             completion.set_show_icons(false);
             completion.set_select_on_show(true);
+            // Right-clicking text moves the cursor to it, unless it is
+            // selected, so that the menu acts on what is clicked.
+            let click = gtk::GestureClick::builder()
+                .button(gdk::BUTTON_SECONDARY)
+                .propagation_phase(gtk::PropagationPhase::Capture)
+                .build();
+            click.connect_pressed(glib::clone!(
+                #[weak]
+                view,
+                move |_, _, x, y| {
+                    #[expect(clippy::cast_possible_truncation, reason = "pixels fit")]
+                    let (x, y) = view.window_to_buffer_coords(
+                        gtk::TextWindowType::Widget,
+                        x as i32,
+                        y as i32,
+                    );
+                    let buffer = view.buffer();
+                    if let Some(iter) = view.iter_at_location(x, y)
+                        && !(buffer.selection_bounds())
+                            .is_some_and(|(start, end)| iter.in_range(&start, &end))
+                    {
+                        buffer.place_cursor(&iter);
+                    }
+                }
+            ));
+            view.add_controller(click);
+            let definition =
+                gio::MenuItem::new(Some("Go to _Definition"), Some("win.go-to-definition"));
+            definition.set_attribute_value("accel", Some(&"F12".to_variant()));
+            let section = gio::Menu::new();
+            section.append_item(&definition);
+            let menu = gio::Menu::new();
+            menu.append_section(None, &section);
+            view.set_extra_menu(Some(&menu));
             obj.set_child(Some(&gtk::ScrolledWindow::builder().child(view).build()));
         }
 
