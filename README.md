@@ -10,7 +10,7 @@ built yet.
 
 ## Building
 
-You need Rust 1.92 or newer, plus GTK 4.14, libadwaita 1.5 and
+You need Rust 1.92 or newer, plus GTK 4.14, libadwaita 1.6 and
 GtkSourceView 5.12 or newer with their development files:
 
 | Distribution  | Packages                                                     |
@@ -108,16 +108,14 @@ Servers that can say what each piece of code is, such as a function, a type or
 a mutable variable, highlight it as such, as the [theme](#theme) says, keeping
 up as you type.
 
-A button in the header bar shows how the tools a window runs, its language
-servers and direnv, are faring: a spinner while any is at work, otherwise a
-warning sign if any has failed since it last started, and otherwise a tick. It
-lists the tools, each with its own sign and the work it has under way, and each
-opens onto its log: starting, failing to start or crashing, its program missing
-from the `PATH`, and all it said, from errors such as failing to load the
-project to notes. The log keeps its latest entry in view, unless scrolled away
-from it. A server that crashes after running for at least 30 seconds restarts
-by itself; one that crashes sooner restarts when you next open a file in its
-language.
+While any of the tools a window runs, its language servers and direnv, is at
+work, a spinner shows in the header bar, and hovering it says what each is
+doing. While any has failed since it last started, a warning sign shows there,
+and hovering it says how: failing to start or crashing, its program missing
+from the `PATH`, or what it said went wrong, such as failing to load the
+project. Everything they say goes to the standard error as well. A server that
+crashes after running for at least 30 seconds restarts by itself; one that
+crashes sooner restarts when you next open a file in its language.
 
 ## Theme
 
@@ -145,8 +143,8 @@ specific rule that sets it, the one naming the most of what the token is, and
 of those equally specific, the last. What no rule styles keeps its syntax
 highlighting.
 
-If the file cannot be used, the status button says why, and Craft's own theme
-stands in for it.
+If the file cannot be used, the warning sign in the header bar says why, and
+Craft's own theme stands in for it.
 
 ## Behaviour
 

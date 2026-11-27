@@ -192,8 +192,8 @@ impl Default for Servers {
 }
 
 impl Servers {
-    /// Shows how the servers and direnv are, and what they are doing.
-    pub fn indicator(&self) -> &gtk::MenuButton {
+    /// Shows what the servers and direnv are doing, and what has gone wrong.
+    pub fn indicator(&self) -> &gtk::Box {
         self.status.widget()
     }
 

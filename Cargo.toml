@@ -9,7 +9,7 @@ repository = "https://github.com/clayts/craft"
 publish = false
 
 [dependencies]
-adw = { package = "libadwaita", version = "0.9", features = ["v1_5"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_6"] }
 gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
 sourceview = { package = "sourceview5", version = "0.11", features = ["v5_12"] }
 futures-channel = "0.3"
