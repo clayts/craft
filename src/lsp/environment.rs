@@ -129,51 +129,24 @@ fn parse_allowed(json: &str) -> serde_json::Result<Option<u8>> {
     Option::deserialize(&status["state"]["foundRC"]["allowed"])
 }
 
-/// Runs `direnv {command} {option}` in `dir`, for what it prints; or, if it
-/// fails, why, as it says in plain text.
+/// Runs `direnv {command} {option}` in `dir`, for what it prints. What it
+/// says goes to Craft's standard error, including why it failed, if it did,
+/// so the error adds nothing unless direnv could not be run at all.
 async fn run(dir: &Path, [command, option]: [&str; 2]) -> Result<glib::GString, String> {
-    let launcher = gio::SubprocessLauncher::new(
-        gio::SubprocessFlags::STDOUT_PIPE | gio::SubprocessFlags::STDERR_PIPE,
-    );
+    let launcher = gio::SubprocessLauncher::new(gio::SubprocessFlags::STDOUT_PIPE);
     launcher.set_cwd(dir);
     let process = launcher
         .spawn(&[DIRENV, command, option].map(OsStr::new))
         .map_err(|err| err.to_string())?;
-    let (stdout, stderr) = process
+    let (stdout, _) = process
         .communicate_utf8_future(None)
         .await
         .map_err(|err| err.to_string())?;
     if process.is_successful() {
         Ok(stdout.unwrap_or_default())
     } else {
-        Err(said(stderr.as_deref().unwrap_or_default()))
+        Err(String::new())
     }
-}
-
-/// What direnv said, in plain text, without the name it begins each line with.
-fn said(stderr: &str) -> String {
-    let text = plain(stderr);
-    let lines: Vec<&str> = text
-        .lines()
-        .map(|line| line.strip_prefix("direnv: ").unwrap_or(line))
-        .collect();
-    lines.join("\n").trim().to_owned()
-}
-
-/// `text` without the escape sequences that color it on a terminal, which
-/// direnv writes regardless.
-fn plain(text: &str) -> String {
-    let mut plain = String::with_capacity(text.len());
-    let mut chars = text.chars();
-    while let Some(c) = chars.next() {
-        if c != '\x1b' {
-            plain.push(c);
-        } else if chars.next() == Some('[') {
-            // Parameters, up to the final letter.
-            chars.by_ref().find(|c| ('@'..='~').contains(c));
-        }
-    }
-    plain
 }
 
 fn is_executable(file: &Path) -> bool {
@@ -203,15 +176,6 @@ mod tests {
         assert_eq!(parse_allowed(json).unwrap(), Some(2));
         let json = r#"{"state": {"foundRC": null, "loadedRC": null}}"#;
         assert_eq!(parse_allowed(json).unwrap(), None);
-    }
-
-    #[test]
-    fn colors_are_stripped() {
-        assert_eq!(
-            plain("\x1b[31mdirenv: error .envrc\x1b[0m\n\x1b[1;33mok"),
-            "direnv: error .envrc\nok"
-        );
-        assert_eq!(plain("plain"), "plain");
     }
 
     #[test]
