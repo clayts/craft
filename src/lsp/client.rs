@@ -220,8 +220,8 @@ impl Client {
             return;
         }
         let Some((program, command)) = environment.find(self.server.commands) else {
-            let missing = self.server.not_found(environment.path().as_deref());
-            self.status.log(self.name(), Level::Error, &missing);
+            self.status
+                .log(self.name(), Level::Error, &self.server.not_found());
             self.state.replace(State::Stopped);
             return;
         };

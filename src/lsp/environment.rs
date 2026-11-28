@@ -85,7 +85,7 @@ impl Environment {
     }
 
     /// The `PATH` that servers are looked for on.
-    pub fn path(&self) -> Option<OsString> {
+    fn path(&self) -> Option<OsString> {
         match self.changes.get("PATH") {
             Some(path) => path.as_ref().map(OsString::from),
             None => std::env::var_os("PATH"),

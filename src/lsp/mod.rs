@@ -13,7 +13,6 @@ mod status;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::ffi::OsStr;
 use std::rc::Rc;
 
 use futures_util::FutureExt;
@@ -126,14 +125,13 @@ impl Server {
         self.commands[0][0]
     }
 
-    /// Says that none of the server's programs is on `path`, and what that
-    /// holds.
-    fn not_found(&self, path: Option<&OsStr>) -> String {
+    /// Says that none of the server's programs is on the PATH.
+    fn not_found(&self) -> String {
         let others: Vec<&str> = self.commands[1..]
             .iter()
             .map(|command| command[0])
             .collect();
-        let missing = match others.as_slice() {
+        match others.as_slice() {
             [] => "Not found on the PATH".to_owned(),
             [other] => format!("Not found on the PATH, nor is {other}"),
             [rest @ .., last] => {
@@ -142,15 +140,7 @@ impl Server {
                     rest.join(", ")
                 )
             }
-        };
-        let dirs: Vec<String> = path
-            .map(|path| {
-                std::env::split_paths(path)
-                    .map(|dir| dir.display().to_string())
-                    .collect()
-            })
-            .unwrap_or_default();
-        format!("{missing}\nThe PATH holds:\n{}", dirs.join("\n"))
+        }
     }
 }
 
@@ -229,8 +219,8 @@ impl Servers {
             if let Some(environment) = environment.peek()
                 && environment.find(server.commands).is_none()
             {
-                let missing = server.not_found(environment.path().as_deref());
-                self.status.log(server.name(), Level::Error, &missing);
+                self.status
+                    .log(server.name(), Level::Error, &server.not_found());
                 return;
             }
             let client = Client::start(server, root.as_ref(), environment, Rc::clone(&self.status));
