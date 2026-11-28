@@ -47,7 +47,9 @@ Each folder opens as a project in a window of its own. Files open as tabs in
 the window of the last folder given, or else in a window of their own. A file
 that does not exist yet is created when you first save it. Each run of Craft is
 separate, with its own windows and the environment it was started in. Opening a
-folder from a window that has one already opens it in a new window.
+folder from a window that has one already opens it in a new window. A window
+without a folder offers those opened lately, from the desktop's list of
+recently used files.
 
 ## Keyboard shortcuts
 
@@ -199,6 +201,7 @@ Craft's own theme stands in for it.
 | `src/window.rs`    | Project window: layout, tabs, actions, close prompts                                      |
 | `src/editor.rs`    | One open file: source view, loading and saving                                            |
 | `src/search.rs`    | Find and replace bar                                                                      |
+| `src/recent.rs`    | Projects opened lately                                                                    |
 | `src/file_tree.rs` | Sidebar tree: loaded lazily, updated live                                                 |
 | `src/theme.rs`     | Theme: `theme.json`, read and resolved                                                    |
 | `src/theme.json`   | Craft's own theme                                                                         |

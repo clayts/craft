@@ -5,7 +5,7 @@ use adw::subclass::prelude::*;
 use gtk::{gio, glib};
 
 use crate::editor::Editor;
-use crate::{display_name, file_tree};
+use crate::{display_name, file_tree, recent};
 
 mod imp {
     use std::cell::RefCell;
@@ -16,8 +16,8 @@ mod imp {
 
     use super::editor;
     use crate::editor::Editor;
-    use crate::lsp;
     use crate::search::Search;
+    use crate::{lsp, recent};
 
     #[derive(Default)]
     pub struct Window {
@@ -107,9 +107,22 @@ mod imp {
                 .halign(gtk::Align::Center)
                 .css_classes(["pill", "suggested-action"])
                 .build();
+            let recent = recent::list(glib::clone!(
+                #[weak]
+                obj,
+                move |folder| obj.set_project(&folder)
+            ));
+            let choices = gtk::Box::new(gtk::Orientation::Vertical, 24);
+            choices.append(&open);
+            choices.append(
+                &adw::Clamp::builder()
+                    .maximum_size(400)
+                    .child(&recent)
+                    .build(),
+            );
             let welcome = adw::StatusPage::builder()
                 .title("Open a Folder")
-                .child(&open)
+                .child(&choices)
                 .build();
             self.stack.add_named(&welcome, Some("welcome"));
             self.stack.add_named(&self.tabs, Some("tabs"));
@@ -219,6 +232,7 @@ impl Window {
     pub fn set_project(&self, root: &gio::File) {
         let imp = self.imp();
         imp.project.replace(Some(root.clone()));
+        recent::add(root);
         imp.servers.set_root(root, self.editors());
         let tree = file_tree::new(
             root,
