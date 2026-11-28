@@ -58,7 +58,7 @@ folder from a window that has one already opens it in a new window.
 | Ctrl+W                                | Close tab            |
 | Ctrl+Q                                | Quit                 |
 | F9                                    | Toggle sidebar       |
-| F12                                   | Go to definition     |
+| F12, Ctrl+click                       | Go to definition     |
 | Ctrl+Space                            | Complete             |
 | Ctrl+F                                | Find                 |
 | Ctrl+H                                | Replace              |
@@ -124,10 +124,10 @@ Hovering shows their messages and the server's description of what is under
 the pointer, with its code, headings and links set out. A long description
 scrolls, and its text can be selected and copied with Ctrl+C.
 
-F12, or Go to Definition in the menu that right-clicking opens, goes to where
-what is at the cursor is defined, opening its file if need be. Right-clicking
-text moves the cursor to it first, unless it is selected, and leaves its
-description open.
+F12, Ctrl+click, or Go to Definition in the menu that right-clicking opens, goes
+to where what is at the cursor, or clicked, is defined, opening its file if
+need be. Right-clicking text moves the cursor to it, unless it is selected, and
+leaves its description open.
 
 Completions appear as you type, or on Ctrl+Space, best matches first. Enter or
 Tab inserts the one selected, adding any import it needs, and Tab then moves
