@@ -5,11 +5,21 @@
 use std::mem;
 
 use gtk::glib;
-use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
 
-/// `markdown` as Pango markup, in the parts between its rules.
-pub fn markup(markdown: &str) -> Vec<String> {
-    let mut writer = Writer::default();
+/// `markdown` as Pango markup, in the parts between its rules. `code` gives
+/// each code block's markup from its fence's info string, empty if it has
+/// none, and its text.
+pub fn markup(markdown: &str, code: &impl Fn(&str, &str) -> String) -> Vec<String> {
+    let mut writer = Writer {
+        code,
+        block: None,
+        parts: Vec::new(),
+        part: String::new(),
+        gap: "",
+        lists: Vec::new(),
+        bulleted: false,
+    };
     for event in Parser::new(markdown) {
         writer.event(event);
     }
@@ -17,13 +27,10 @@ pub fn markup(markdown: &str) -> Vec<String> {
     writer.parts
 }
 
-/// Code as Pango markup, as a code block shows it.
-pub fn code(code: &str) -> String {
-    format!("<tt>{}</tt>", glib::markup_escape_text(code.trim_end()))
-}
-
-#[derive(Default)]
-struct Writer {
+struct Writer<'a, F> {
+    code: &'a F,
+    /// The code block being read, with its info string.
+    block: Option<(String, String)>,
     parts: Vec<String>,
     part: String,
     /// What goes before the next text, as blocks begin: a blank line between
@@ -37,15 +44,27 @@ struct Writer {
     bulleted: bool,
 }
 
-impl Writer {
+impl<F: Fn(&str, &str) -> String> Writer<'_, F> {
     fn event(&mut self, event: Event) {
         match event {
             Event::Start(tag) => self.start(tag),
             Event::End(tag) => self.end(tag),
-            Event::Text(text) | Event::Html(text) | Event::InlineHtml(text) => {
-                self.text(&glib::markup_escape_text(&text));
+            Event::Text(text) => match &mut self.block {
+                Some((_, code)) => code.push_str(&text),
+                None => self.text(&glib::markup_escape_text(&text)),
+            },
+            // HTML's text, without its tags. An HTML block comes a line at
+            // a time, while inline HTML is a tag alone, which is left out.
+            Event::Html(line) => {
+                let line = without_tags(&line);
+                if !line.trim().is_empty() {
+                    self.text(&glib::markup_escape_text(line.trim_end()));
+                    self.gap = "\n";
+                }
             }
-            Event::Code(text) => self.text(&code(&text)),
+            Event::Code(text) => {
+                self.text(&format!("<tt>{}</tt>", glib::markup_escape_text(&text)));
+            }
             Event::SoftBreak => self.text(" "),
             Event::HardBreak => self.text("\n"),
             Event::Rule => self.rule(),
@@ -69,7 +88,13 @@ impl Writer {
             Tag::Heading { .. } | Tag::Strong => self.text("<b>"),
             Tag::Emphasis => self.text("<i>"),
             Tag::Strikethrough => self.text("<s>"),
-            Tag::CodeBlock(_) => self.text("<tt>"),
+            Tag::CodeBlock(kind) => {
+                let info = match kind {
+                    CodeBlockKind::Fenced(info) => info.into_string(),
+                    CodeBlockKind::Indented => String::new(),
+                };
+                self.block = Some((info, String::new()));
+            }
             Tag::Link { dest_url, .. } => {
                 self.text(&format!(
                     "<a href=\"{}\">",
@@ -103,8 +128,9 @@ impl Writer {
             TagEnd::Strikethrough => self.part.push_str("</s>"),
             TagEnd::Link => self.part.push_str("</a>"),
             TagEnd::CodeBlock => {
-                self.part.truncate(self.part.trim_end_matches('\n').len());
-                self.part.push_str("</tt>");
+                if let Some((info, code)) = self.block.take() {
+                    self.text(&(self.code)(&info, &code));
+                }
             }
             TagEnd::List(_) => {
                 self.lists.pop();
@@ -132,16 +158,40 @@ impl Writer {
     }
 }
 
+/// `html` without its tags.
+fn without_tags(html: &str) -> String {
+    let mut text = String::new();
+    let mut rest = html;
+    while let Some(start) = rest.find('<') {
+        text.push_str(&rest[..start]);
+        rest = rest[start..]
+            .find('>')
+            .map_or("", |end| &rest[start + end + 1..]);
+    }
+    text.push_str(rest);
+    text
+}
+
 #[cfg(test)]
 mod tests {
-    use super::markup;
+    use gtk::glib;
+
+    /// `markdown` as markup, with code blocks marked with their info strings.
+    fn markup(markdown: &str) -> Vec<String> {
+        super::markup(markdown, &|info, code| {
+            format!(
+                "<tt>[{info}]{}</tt>",
+                glib::markup_escape_text(code.trim_end())
+            )
+        })
+    }
 
     #[test]
     fn blocks_are_spaced_and_styled() {
         assert_eq!(
             markup("# Title\nSome *very* **bold** text,\nwrapped.\n\n```rust\nlet a = 1 < 2;\n```"),
             [
-                "<b>Title</b>\n\nSome <i>very</i> <b>bold</b> text, wrapped.\n\n<tt>let a = 1 &lt; 2;</tt>"
+                "<b>Title</b>\n\nSome <i>very</i> <b>bold</b> text, wrapped.\n\n<tt>[rust]let a = 1 &lt; 2;</tt>"
             ]
         );
     }
@@ -149,8 +199,11 @@ mod tests {
     #[test]
     fn rules_separate_parts() {
         assert_eq!(
-            markup("```rust\nfn f()\n```\n\n---\n\nDoes `f` & more."),
-            ["<tt>fn f()</tt>", "Does <tt>f</tt> &amp; more."]
+            markup("```rust,ignore\nfn f()\n```\n\n---\n\nDoes `f` & more.\n\n    indented"),
+            [
+                "<tt>[rust,ignore]fn f()</tt>",
+                "Does <tt>f</tt> &amp; more.\n\n<tt>[]indented</tt>"
+            ]
         );
         assert_eq!(markup("---"), Vec::<String>::new());
     }
@@ -160,6 +213,16 @@ mod tests {
         assert_eq!(
             markup("Steps:\n\n1. one\n2. two\n   - deep\n\n- loose\n\n  item"),
             ["Steps:\n\n1. one\n2. two\n  • deep\n\n• loose\nitem"]
+        );
+    }
+
+    #[test]
+    fn html_is_left_out_but_for_its_text() {
+        assert_eq!(
+            markup(
+                "Use the <a href=\"#\" onclick=\"f();\">search button</a>.\n\n<div class=\"warning\">\n\nHeed <b>this</b>.\n</div>\n<p>\nOne\nTwo\n</p>\n\nDone."
+            ),
+            ["Use the search button.\n\nHeed this.\n\nOne\nTwo\n\nDone."]
         );
     }
 

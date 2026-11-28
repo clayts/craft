@@ -2,6 +2,7 @@
 
 mod editor;
 mod file_tree;
+mod hover;
 mod lsp;
 mod recent;
 mod search;

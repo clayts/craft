@@ -1,7 +1,6 @@
 //! An open document: a file and the source view editing it.
 
 use std::borrow::Cow;
-use std::cell::Cell;
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -26,6 +25,7 @@ mod imp {
     use sourceview::prelude::*;
 
     use crate::display_name;
+    use crate::hover::Hover;
     use crate::lsp::Document;
 
     #[derive(Default, glib::Properties)]
@@ -50,6 +50,7 @@ mod imp {
         pub(super) saving: Cell<bool>,
         /// The file as its language server has it, if one is running.
         pub(super) document: RefCell<Option<Rc<Document>>>,
+        hover: OnceCell<Hover>,
     }
 
     #[glib::object_subclass]
@@ -107,16 +108,6 @@ mod imp {
             completion.set_select_on_show(true);
             // Right-clicking text opens its menu, Ctrl+clicking it goes to
             // its definition.
-            let quiet = Rc::new(Cell::new(false));
-            self.buffer.connect_cursor_moved(glib::clone!(
-                #[strong]
-                quiet,
-                move |buffer| {
-                    if quiet.get() {
-                        buffer.stop_signal_emission_by_name("cursor-moved");
-                    }
-                }
-            ));
             let click = gtk::GestureClick::builder()
                 .button(0)
                 .propagation_phase(gtk::PropagationPhase::Capture)
@@ -124,7 +115,7 @@ mod imp {
             click.connect_pressed(glib::clone!(
                 #[weak]
                 view,
-                move |click, _, x, y| super::clicked(&view, click, x, y, &quiet)
+                move |click, _, x, y| super::clicked(&view, click, x, y)
             ));
             view.add_controller(click);
             let definition =
@@ -136,11 +127,19 @@ mod imp {
             menu.append_section(None, &section);
             view.set_extra_menu(Some(&menu));
             obj.set_child(Some(&gtk::ScrolledWindow::builder().child(view).build()));
+            // Once the view is in its scrolled window, whose scrolling the
+            // hover watches.
+            self.hover
+                .set(Hover::new(&obj))
+                .unwrap_or_else(|_| unreachable!("the hover is set once"));
         }
 
         fn dispose(&self) {
             // While the view is intact for the document to detach from it.
             self.document.take();
+            if let Some(hover) = self.hover.get() {
+                hover.unparent();
+            }
         }
     }
 
@@ -356,12 +355,10 @@ impl Editor {
 }
 
 /// Acts on a click at `x`, `y` in `view` on text: a right-click moves the
-/// cursor to it, unless it is selected, and opens the menu; a Ctrl+click
-/// moves the cursor to it and goes to its definition. The view gets neither
-/// click, as it would hide the hover, which on a right-click stays, as it
-/// describes what is clicked; for that, `quiet` keeps the cursor's move from
-/// what hears of cursor moves after the line numbers.
-fn clicked(view: &sourceview::View, click: &gtk::GestureClick, x: f64, y: f64, quiet: &Cell<bool>) {
+/// cursor to it, unless it is selected, for the menu to act on; a Ctrl+click
+/// moves the cursor to it and goes to its definition, in place of what a
+/// click does.
+fn clicked(view: &sourceview::View, click: &gtk::GestureClick, x: f64, y: f64) {
     let button = click.current_button();
     let definition = button == gdk::BUTTON_PRIMARY
         && (click.current_event_state()).contains(gdk::ModifierType::CONTROL_MASK);
@@ -374,24 +371,16 @@ fn clicked(view: &sourceview::View, click: &gtk::GestureClick, x: f64, y: f64, q
         return;
     };
     let buffer = view.buffer();
-    if !definition
-        && (buffer.selection_bounds()).is_some_and(|(start, end)| iter.in_range(&start, &end))
-    {
-        return;
+    if definition {
+        buffer.place_cursor(&iter);
+        click.set_state(gtk::EventSequenceState::Claimed);
+        view.completion().hide();
+        view.grab_focus();
+        view.activate_action("win.go-to-definition", None)
+            .expect("views clicked in are in windows, which have it");
+    } else if !(buffer.selection_bounds()).is_some_and(|(start, end)| iter.in_range(&start, &end)) {
+        buffer.place_cursor(&iter);
     }
-    quiet.set(!definition);
-    buffer.place_cursor(&iter);
-    quiet.set(false);
-    click.set_state(gtk::EventSequenceState::Claimed);
-    view.completion().hide();
-    view.grab_focus();
-    let action = if definition {
-        "win.go-to-definition"
-    } else {
-        "menu.popup"
-    };
-    view.activate_action(action, None)
-        .expect("views clicked in are in windows, which have both");
 }
 
 /// Scrolls `view` to show the cursor a third of the way down, and as far

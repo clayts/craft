@@ -26,11 +26,8 @@ use lsp_types::{
 use sourceview::prelude::*;
 
 use super::client::Client;
-use super::completion;
-use super::hover::HoverProvider;
-use super::markdown;
 use super::semantic::Highlighter;
-use super::{Encoding, Shift};
+use super::{Encoding, Shift, code, completion, markdown};
 use crate::editor::Editor;
 
 const ERROR: gdk::RGBA = gdk::RGBA::new(0.878, 0.106, 0.141, 1.0);
@@ -47,7 +44,6 @@ pub struct Document {
     language: &'static str,
     buffer: sourceview::Buffer,
     view: sourceview::View,
-    hover: HoverProvider,
     completion: completion::Provider,
     highlighter: Highlighter,
     handlers: Vec<glib::SignalHandlerId>,
@@ -65,6 +61,14 @@ pub struct Document {
     edits: RefCell<VecDeque<(i32, Shift)>>,
     /// Each diagnostic's underline, which follows edits, and message.
     diagnostics: RefCell<Vec<(gtk::TextTag, String)>>,
+}
+
+/// What a server says of something in a file.
+pub struct Description {
+    /// The description, as Pango markup, in the parts it separates.
+    pub parts: Vec<String>,
+    /// What it describes, if the server says.
+    pub range: Option<Range>,
 }
 
 impl Document {
@@ -128,7 +132,6 @@ impl Document {
                 language,
                 buffer: buffer.clone(),
                 view: view.clone(),
-                hover: HoverProvider::new(this.clone()),
                 completion: completion::Provider::new(this.clone()),
                 highlighter: Highlighter::new(this.clone()),
                 handlers,
@@ -140,7 +143,6 @@ impl Document {
                 diagnostics: RefCell::default(),
             }
         });
-        view.hover().add_provider(&document.hover);
         view.completion().add_provider(&document.completion);
         client.add(&document.uri, &document);
         document
@@ -400,7 +402,7 @@ impl Document {
     }
 
     /// The messages of the diagnostics at `iter`.
-    pub(super) fn diagnostics_at(&self, iter: &gtk::TextIter) -> Vec<String> {
+    pub fn diagnostics_at(&self, iter: &gtk::TextIter) -> Vec<String> {
         self.diagnostics
             .borrow()
             .iter()
@@ -409,37 +411,49 @@ impl Document {
             .collect()
     }
 
-    /// The server's description of what is at `iter`, as Pango markup, in
-    /// the parts it separates.
-    pub(super) fn hover(&self, iter: &gtk::TextIter) -> impl Future<Output = Vec<String>> + use<> {
+    /// The server's description of what is at `iter`, if it has one, with
+    /// code highlighted as the file is. Code blocks that name no language
+    /// are taken to be in the file's.
+    pub fn hover(&self, iter: &gtk::TextIter) -> impl Future<Output = Option<Description>> + use<> {
         let request = self.position_request(iter, |capabilities| {
             capabilities
                 .hover_provider
                 .as_ref()
                 .is_some_and(|provider| *provider != HoverProviderCapability::Simple(false))
         });
+        let (language, scheme) = (self.buffer.language(), self.buffer.style_scheme());
         async move {
-            let Some((client, params)) = request else {
-                return Vec::new();
-            };
-            let Ok(Some(hover)) = client
+            let (client, params) = request?;
+            let hover = client
                 .request::<HoverRequest>(HoverParams {
                     text_document_position_params: params,
                     work_done_progress_params: WorkDoneProgressParams::default(),
                 })
                 .await
-            else {
-                return Vec::new();
+                .ok()??;
+            let code = |info: &str, text: &str| {
+                let named = if info.is_empty() {
+                    language.clone()
+                } else {
+                    code::language(info)
+                };
+                code::markup(text, named.as_ref(), scheme.as_ref())
             };
-            match hover.contents {
-                HoverContents::Scalar(text) => marked(text),
-                HoverContents::Array(texts) => texts.into_iter().flat_map(marked).collect(),
+            let parts = match hover.contents {
+                HoverContents::Scalar(text) => marked(text, &code),
+                HoverContents::Array(texts) => (texts.into_iter())
+                    .flat_map(|text| marked(text, &code))
+                    .collect(),
                 HoverContents::Markup(MarkupContent {
                     kind: MarkupKind::Markdown,
                     value,
-                }) => markdown::markup(&value),
+                }) => markdown::markup(&value, &code),
                 HoverContents::Markup(MarkupContent { value, .. }) => plain(&value),
-            }
+            };
+            Some(Description {
+                parts,
+                range: hover.range,
+            })
         }
     }
 
@@ -557,7 +571,6 @@ impl Drop for Document {
         for handler in self.handlers.drain(..) {
             self.buffer.disconnect(handler);
         }
-        self.view.hover().remove_provider(&self.hover);
         self.view.completion().remove_provider(&self.completion);
         self.clear_diagnostics();
         self.highlighter.clear(&self.buffer);
@@ -586,12 +599,13 @@ fn tidy(text: &str) -> String {
     lines.join("\n")
 }
 
-/// `text`, in Markdown or as code, as Pango markup in parts.
-fn marked(text: MarkedString) -> Vec<String> {
+/// `text`, in Markdown or as code, as Pango markup in parts, with code
+/// blocks as `code` gives them.
+fn marked(text: MarkedString, code: &impl Fn(&str, &str) -> String) -> Vec<String> {
     match text {
-        MarkedString::String(text) => markdown::markup(&text),
-        MarkedString::LanguageString(code) if code.value.trim().is_empty() => Vec::new(),
-        MarkedString::LanguageString(code) => vec![markdown::code(&code.value)],
+        MarkedString::String(text) => markdown::markup(&text, code),
+        MarkedString::LanguageString(text) if text.value.trim().is_empty() => Vec::new(),
+        MarkedString::LanguageString(text) => vec![code(&text.language, &text.value)],
     }
 }
 

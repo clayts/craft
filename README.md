@@ -123,8 +123,11 @@ folder, such as rust-analyzer, say so.
 
 Errors, warnings and notes are underlined, and stay in place as you type.
 Hovering shows their messages and the server's description of what is under
-the pointer, with its code, headings and links set out. A long description
-scrolls, and its text can be selected and copied with Ctrl+C.
+the pointer: its code highlighted as in the editor, its headings and links set
+out. The description stays open while the pointer moves onto it. A long one
+scrolls, as its scrollbar shows, without scrolling the editor at its ends, and
+its text can be selected and copied, with Ctrl+C or the menu that
+right-clicking opens. Escape closes it, as do typing and clicking elsewhere.
 
 F12, Ctrl+click, or Go to Definition in the menu that right-clicking opens, goes
 to where what is at the cursor, or clicked, is defined, opening its file if
@@ -201,6 +204,7 @@ Craft's own theme stands in for it.
 | `src/window.rs`    | Project window: layout, tabs, actions, close prompts                                      |
 | `src/editor.rs`    | One open file: source view, loading and saving                                            |
 | `src/search.rs`    | Find and replace bar                                                                      |
+| `src/hover.rs`     | Hover: what is under the pointer, described                                               |
 | `src/recent.rs`    | Projects opened lately                                                                    |
 | `src/file_tree.rs` | Sidebar tree: loaded lazily, updated live                                                 |
 | `src/theme.rs`     | Theme: `theme.json`, read and resolved                                                    |

@@ -3,10 +3,10 @@
 //! each open file to its server.
 
 mod client;
+mod code;
 mod completion;
 mod document;
 mod environment;
-mod hover;
 mod markdown;
 mod position;
 mod semantic;
