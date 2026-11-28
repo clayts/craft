@@ -31,7 +31,7 @@ The flake builds against nixos-unstable:
 ```sh
 nix run        # build and run Craft
 nix build      # build it into ./result
-nix develop    # a shell with Rust, the libraries, Clippy, rustfmt and rust-analyzer
+nix develop    # a shell with Rust, the libraries, Clippy, rustfmt, rust-analyzer and nixd
 ```
 
 Inside `nix develop`, `cargo build` and `cargo run` work as usual. `nix fmt`

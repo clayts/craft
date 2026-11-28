@@ -22,6 +22,7 @@
           inputsFrom = [ self.packages.${pkgs.stdenv.hostPlatform.system}.default ];
           packages = [
             pkgs.clippy
+            pkgs.nixd
             pkgs.rustfmt
             pkgs.rust-analyzer
           ];
