@@ -15,6 +15,7 @@ sourceview = { package = "sourceview5", version = "0.11", features = ["v5_12"] }
 futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 lsp-types = "0.97"
+pulldown-cmark = { version = "0.13", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value"] }
 

@@ -399,7 +399,7 @@ impl Client {
                 ..Default::default()
             }),
             hover: Some(HoverClientCapabilities {
-                content_format: Some(vec![MarkupKind::PlainText]),
+                content_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
                 ..Default::default()
             }),
             definition: Some(GotoCapability {

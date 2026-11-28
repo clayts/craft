@@ -121,7 +121,8 @@ folder, such as rust-analyzer, say so.
 
 Errors, warnings and notes are underlined, and stay in place as you type.
 Hovering shows their messages and the server's description of what is under
-the pointer.
+the pointer, with its code, headings and links set out. A long description
+scrolls, and its text can be selected and copied with Ctrl+C.
 
 F12, or Go to Definition in the menu that right-clicking opens, goes to where
 what is at the cursor is defined, opening its file if need be. Right-clicking

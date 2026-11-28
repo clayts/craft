@@ -17,7 +17,7 @@ use lsp_types::{
     DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, GotoDefinitionParams,
     GotoDefinitionResponse, HoverContents, HoverParams, HoverProviderCapability, MarkedString,
-    OneOf, PartialResultParams, Position, Range, ServerCapabilities,
+    MarkupContent, MarkupKind, OneOf, PartialResultParams, Position, Range, ServerCapabilities,
     TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
     TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
     TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Uri, VersionedTextDocumentIdentifier,
@@ -28,6 +28,7 @@ use sourceview::prelude::*;
 use super::client::Client;
 use super::completion;
 use super::hover::HoverProvider;
+use super::markdown;
 use super::semantic::Highlighter;
 use super::{Encoding, Shift};
 use crate::editor::Editor;
@@ -408,11 +409,9 @@ impl Document {
             .collect()
     }
 
-    /// The server's description of what is at `iter`, as plain text.
-    pub(super) fn hover(
-        &self,
-        iter: &gtk::TextIter,
-    ) -> impl Future<Output = Option<String>> + use<> {
+    /// The server's description of what is at `iter`, as Pango markup, in
+    /// the parts it separates.
+    pub(super) fn hover(&self, iter: &gtk::TextIter) -> impl Future<Output = Vec<String>> + use<> {
         let request = self.position_request(iter, |capabilities| {
             capabilities
                 .hover_provider
@@ -420,25 +419,27 @@ impl Document {
                 .is_some_and(|provider| *provider != HoverProviderCapability::Simple(false))
         });
         async move {
-            let (client, params) = request?;
-            let hover = client
+            let Some((client, params)) = request else {
+                return Vec::new();
+            };
+            let Ok(Some(hover)) = client
                 .request::<HoverRequest>(HoverParams {
                     text_document_position_params: params,
                     work_done_progress_params: WorkDoneProgressParams::default(),
                 })
                 .await
-                .ok()??;
-            let text = match hover.contents {
-                HoverContents::Scalar(text) => marked_text(text),
-                HoverContents::Array(texts) => texts
-                    .into_iter()
-                    .map(marked_text)
-                    .collect::<Vec<_>>()
-                    .join("\n\n"),
-                HoverContents::Markup(markup) => markup.value,
+            else {
+                return Vec::new();
             };
-            let text = tidy(&text);
-            (!text.is_empty()).then_some(text)
+            match hover.contents {
+                HoverContents::Scalar(text) => marked(text),
+                HoverContents::Array(texts) => texts.into_iter().flat_map(marked).collect(),
+                HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value,
+                }) => markdown::markup(&value),
+                HoverContents::Markup(MarkupContent { value, .. }) => plain(&value),
+            }
         }
     }
 
@@ -585,10 +586,22 @@ fn tidy(text: &str) -> String {
     lines.join("\n")
 }
 
-fn marked_text(text: MarkedString) -> String {
+/// `text`, in Markdown or as code, as Pango markup in parts.
+fn marked(text: MarkedString) -> Vec<String> {
     match text {
-        MarkedString::String(text) => text,
-        MarkedString::LanguageString(code) => code.value,
+        MarkedString::String(text) => markdown::markup(&text),
+        MarkedString::LanguageString(code) if code.value.trim().is_empty() => Vec::new(),
+        MarkedString::LanguageString(code) => vec![markdown::code(&code.value)],
+    }
+}
+
+/// Plain `text` as Pango markup, if there is any.
+fn plain(text: &str) -> Vec<String> {
+    let text = tidy(text);
+    if text.is_empty() {
+        Vec::new()
+    } else {
+        vec![glib::markup_escape_text(&text).into()]
     }
 }
 
