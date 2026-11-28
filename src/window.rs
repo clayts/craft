@@ -26,7 +26,6 @@ mod imp {
         pub(super) split_view: adw::OverlaySplitView,
         pub(super) sidebar: gtk::ScrolledWindow,
         pub(super) sidebar_button: gtk::ToggleButton,
-        pub(super) heading: adw::WindowTitle,
         pub(super) stack: gtk::Stack,
         pub(super) tabs: adw::TabView,
         pub(super) search: Search,
@@ -90,9 +89,14 @@ mod imp {
                 .bidirectional()
                 .sync_create()
                 .build();
-            let header = adw::HeaderBar::builder()
-                .title_widget(&self.heading)
+            // The tabs fill the header bar, even one alone.
+            let tab_bar = adw::TabBar::builder()
+                .view(&self.tabs)
+                .autohide(false)
+                .hexpand(true)
+                .css_classes(["inline"])
                 .build();
+            let header = adw::HeaderBar::builder().title_widget(&tab_bar).build();
             header.pack_start(&self.sidebar_button);
             header.pack_end(self.servers.indicator());
 
@@ -112,7 +116,6 @@ mod imp {
 
             let content = adw::ToolbarView::new();
             content.add_top_bar(&header);
-            content.add_top_bar(&adw::TabBar::builder().view(&self.tabs).build());
             content.add_top_bar(&self.search);
             content.set_content(Some(&self.stack));
 
@@ -132,20 +135,9 @@ mod imp {
             self.tabs.connect_page_attached(glib::clone!(
                 #[weak]
                 obj,
-                move |_, page, _| {
-                    page.connect_title_notify(glib::clone!(
-                        #[weak]
-                        obj,
-                        move |page| {
-                            if page.is_selected() {
-                                obj.update_title();
-                            }
-                        }
-                    ));
-                    // Editors dragged in from another window join this
-                    // one's servers too.
-                    obj.imp().servers.attach(&editor(page));
-                }
+                // Editors dragged in from another window join this one's
+                // servers too.
+                move |_, page, _| obj.imp().servers.attach(&editor(page))
             ));
             self.tabs.connect_close_page(glib::clone!(
                 #[weak]
@@ -167,10 +159,7 @@ mod imp {
             self.tabs.connect_selected_page_notify(glib::clone!(
                 #[weak]
                 obj,
-                move |_| {
-                    obj.imp().search.set_editor(obj.current_editor());
-                    obj.update_title();
-                }
+                move |_| obj.imp().search.set_editor(obj.current_editor())
             ));
             self.tabs.connect_n_pages_notify(glib::clone!(
                 #[weak]
@@ -244,7 +233,6 @@ impl Window {
         imp.split_view.set_show_sidebar(true);
         self.set_title(Some(&display_name(root)));
         self.update_state();
-        self.update_title();
     }
 
     /// Shows `files`, reading each that is not open yet into a new tab. Tabs
@@ -449,37 +437,6 @@ impl Window {
             } else {
                 "welcome"
             });
-    }
-
-    /// Shows the selected tab's title and location in the header bar.
-    fn update_title(&self) {
-        let imp = self.imp();
-        let page = imp.tabs.selected_page();
-        imp.heading
-            .set_title(&page.as_ref().map(adw::TabPage::title).unwrap_or_default());
-        imp.heading.set_subtitle(
-            &page
-                .map(|page| self.location(&editor(&page).file()))
-                .unwrap_or_default(),
-        );
-    }
-
-    /// The directory containing `file`: relative to the project when inside
-    /// it, empty at its root.
-    fn location(&self, file: &gio::File) -> String {
-        let Some(dir) = file.parent() else {
-            return String::new();
-        };
-        let project = self.project();
-        if project.as_ref().is_some_and(|root| root.equal(&dir)) {
-            return String::new();
-        }
-        project
-            .and_then(|root| root.relative_path(&dir))
-            .map_or_else(
-                || dir.parse_name().into(),
-                |path| glib::filename_display_name(path).into(),
-            )
     }
 
     /// Shows `err` unless it is a cancellation, which the user asked for.
