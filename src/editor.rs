@@ -258,8 +258,23 @@ impl Editor {
         let imp = self.imp();
         imp.buffer
             .place_cursor(&encoding.iter_at(&imp.buffer, position));
-        imp.view
-            .scroll_to_mark(&imp.buffer.get_insert(), 0.0, true, 0.0, 0.3);
+        // GTK scrolls in an animation aimed where the cursor is as it
+        // begins, which falls short while the lines above are still being
+        // measured, as in a new tab. So the view first gets its size, then
+        // its lines measured, which GTK does at a higher priority.
+        imp.view.add_tick_callback(|view, _| {
+            if view.height() == 0 {
+                return glib::ControlFlow::Continue;
+            }
+            let view = view.downgrade();
+            glib::idle_add_local_full(glib::Priority::LOW, move || {
+                if let Some(view) = view.upgrade() {
+                    scroll_to_cursor(&view);
+                }
+                glib::ControlFlow::Break
+            });
+            glib::ControlFlow::Break
+        });
         self.grab_focus();
     }
 
@@ -341,6 +356,18 @@ impl Editor {
         dialog.set_close_response("cancel");
         dialog.choose_future(Some(self)).await == "overwrite"
     }
+}
+
+/// Scrolls `view` to show the cursor a third of the way down, and as far
+/// left as it can be while still showing it.
+fn scroll_to_cursor(view: &sourceview::View) {
+    let insert = view.buffer().get_insert();
+    let cursor = view.iter_location(&view.buffer().iter_at_mark(&insert));
+    let width = view.visible_rect().width();
+    // Aligning down aligns across too, here to the left edge, or else as far
+    // right as the cursor is beyond the screen's width.
+    let across = f64::from(cursor.x()) / f64::from((width - cursor.width()).max(1));
+    view.scroll_to_mark(&insert, 0.0, true, across.min(1.0), 0.3);
 }
 
 /// `text` with every line ended by `\r\n`, including lines pasted in with
