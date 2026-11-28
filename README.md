@@ -125,7 +125,8 @@ the pointer.
 
 F12, or Go to Definition in the menu that right-clicking opens, goes to where
 what is at the cursor is defined, opening its file if need be. Right-clicking
-text moves the cursor to it first, unless it is selected.
+text moves the cursor to it first, unless it is selected, and leaves its
+description open.
 
 Completions appear as you type, or on Ctrl+Space, best matches first. Enter or
 Tab inserts the one selected, adding any import it needs, and Tab then moves
@@ -200,6 +201,7 @@ Craft's own theme stands in for it.
 | `src/file_tree.rs` | Sidebar tree: loaded lazily, updated live                                                 |
 | `src/theme.rs`     | Theme: `theme.json`, read and resolved                                                    |
 | `src/theme.json`   | Craft's own theme                                                                         |
+| `src/style.css`    | Craft's style sheet                                                                       |
 | `src/lsp/`         | Language servers: environments, processes, files, hover, completion, highlighting, status |
 | `package.nix`      | Nix package                                                                               |
 | `flake.nix`        | Nix flake: package, development shell and formatter                                       |

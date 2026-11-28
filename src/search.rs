@@ -2,8 +2,6 @@
 //! highlights each match of what is typed into it, says how many there are
 //! and which is selected, moves between them, and replaces them.
 
-use std::sync::Once;
-
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
@@ -11,9 +9,9 @@ use sourceview::prelude::*;
 
 use crate::editor::Editor;
 
-/// The style class of an editor being searched, whose selection then shows as
-/// when the editor has the focus, so that the selected match stands out from
-/// the rest while the bar has the focus.
+/// The style class of an editor being searched, which `style.css` shows the
+/// selection of as when the editor has the focus, so that the selected match
+/// stands out from the rest while the bar has the focus.
 const SEARCHED: &str = "searched";
 
 mod imp {
@@ -90,9 +88,7 @@ struct Target {
 
 impl Target {
     fn new(search: &Search, editor: Editor) -> Self {
-        let view = editor.view();
-        add_style(&view.display());
-        view.add_css_class(SEARCHED);
+        editor.view().add_css_class(SEARCHED);
         let buffer = editor.buffer();
         let context = sourceview::SearchContext::new(&buffer, Some(&search.imp().settings));
         // Once the whole text is searched, which is also when any error in
@@ -423,23 +419,6 @@ impl Search {
         let target = self.imp().target.borrow();
         (target.as_ref()).map(|target| (target.editor.clone(), target.context.clone()))
     }
-}
-
-/// Gives `display` the style that [`SEARCHED`] stands for, once.
-fn add_style(display: &gtk::gdk::Display) {
-    static ADDED: Once = Once::new();
-    ADDED.call_once(|| {
-        let style = gtk::CssProvider::new();
-        style.load_from_string(&format!(
-            "textview.{SEARCHED} > text > selection \
-             {{ background-color: alpha(@accent_bg_color, 0.3); }}"
-        ));
-        gtk::style_context_add_provider_for_display(
-            display,
-            &style,
-            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-        );
-    });
 }
 
 /// A handler, for a signal of any object, that calls `method` on `search`

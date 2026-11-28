@@ -105,7 +105,21 @@ mod imp {
             completion.set_show_icons(false);
             completion.set_select_on_show(true);
             // Right-clicking text moves the cursor to it, unless it is
-            // selected, so that the menu acts on what is clicked.
+            // selected, so that the menu acts on what is clicked. The hover
+            // stays open, as it describes what is clicked: the move is kept
+            // from what hears of cursor moves after the line numbers, and the
+            // click from the view, which hides its popups on any click, so
+            // the menu is opened, and completions hidden, here instead.
+            let clicking = Rc::new(Cell::new(false));
+            self.buffer.connect_cursor_moved(glib::clone!(
+                #[strong]
+                clicking,
+                move |buffer| {
+                    if clicking.get() {
+                        buffer.stop_signal_emission_by_name("cursor-moved");
+                    }
+                }
+            ));
             let click = gtk::GestureClick::builder()
                 .button(gdk::BUTTON_SECONDARY)
                 .propagation_phase(gtk::PropagationPhase::Capture)
@@ -113,7 +127,7 @@ mod imp {
             click.connect_pressed(glib::clone!(
                 #[weak]
                 view,
-                move |_, _, x, y| {
+                move |click, _, x, y| {
                     #[expect(clippy::cast_possible_truncation, reason = "pixels fit")]
                     let (x, y) = view.window_to_buffer_coords(
                         gtk::TextWindowType::Widget,
@@ -125,7 +139,14 @@ mod imp {
                         && !(buffer.selection_bounds())
                             .is_some_and(|(start, end)| iter.in_range(&start, &end))
                     {
+                        clicking.set(true);
                         buffer.place_cursor(&iter);
+                        clicking.set(false);
+                        click.set_state(gtk::EventSequenceState::Claimed);
+                        view.completion().hide();
+                        view.grab_focus();
+                        view.activate_action("menu.popup", None)
+                            .expect("text views have menus");
                     }
                 }
             ));

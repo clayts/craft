@@ -1,0 +1,14 @@
+/* An editor being searched shows its selection, the selected match, as when
+   it has the focus, so that it stands out while the find bar has the focus. */
+textview.searched > text > selection {
+  background-color: alpha(@accent_bg_color, 0.3);
+}
+
+/* GtkSourceView sets its hovers over the line they describe by the margin
+   around them, kept for their shadows, which takes clicks meant for the text,
+   such as to open its menu. As for its completions above a line, the margin
+   below is cut to a pixel, and the shadow cast upwards. */
+GtkSourceAssistant.hover-assistant {
+  margin-bottom: 1px;
+  box-shadow: 0 -2px 6px 3px alpha(black, 0.09), 0 0 0 1px alpha(black, 0.09);
+}

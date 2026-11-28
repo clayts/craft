@@ -29,6 +29,15 @@ fn main() -> glib::ExitCode {
 
 fn startup(app: &adw::Application) {
     sourceview::init();
+    let style = gtk::CssProvider::new();
+    style.load_from_string(include_str!("style.css"));
+    if let Some(display) = gtk::gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &style,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
     // Closing each window, rather than quitting outright, lets windows with
     // unsaved changes ask first.
     let quit = gio::ActionEntry::builder("quit")
