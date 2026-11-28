@@ -4,6 +4,7 @@ mod editor;
 mod file_tree;
 mod hover;
 mod lsp;
+mod project_search;
 mod recent;
 mod search;
 mod theme;

@@ -3,9 +3,9 @@
 A minimal code editor for GNOME, written in Rust with GTK 4, libadwaita and
 GtkSourceView.
 
-Craft has a project file tree, tabs, find and replace, and language server
-support, and nothing else: no settings, git, AI, plugins, terminal or run
-commands. Symbol search is not built yet.
+Craft has a project file tree, tabs, find and replace in a file or across the
+project, and language server support, and nothing else: no settings, git, AI,
+plugins, terminal or run commands. Symbol search is not built yet.
 
 ## Building
 
@@ -67,6 +67,7 @@ recently used files.
 | Ctrl+G, Ctrl+Shift+G                  | Next, previous match |
 | Enter, Shift+Enter, in the find field | Next, previous match |
 | Escape, in the find bar               | Close the find bar   |
+| Ctrl+Shift+F                          | Find in project      |
 | Ctrl+Tab, Ctrl+Page Up/Down           | Switch tab           |
 | Alt+1…9                               | Go to tab            |
 | Ctrl+Shift+Page Up/Down               | Move tab             |
@@ -89,6 +90,19 @@ the replacement stands for the whole match, `\1` for its first group, and so
 on.
 
 The bar follows the selected tab, and keeps its text when closed.
+
+Ctrl+Shift+F, or the search button above the file tree, finds in the whole
+project instead, in place of the tree, starting with what is selected if it is
+on one line. Every file is searched but for those that `.gitignore` files
+leave out, version control's own, and binary ones; files open in tabs are
+searched as they stand, saved or not. Matches are listed under their files as
+you type, and the same buttons as the bar's match case, whole words and
+regular expressions. Clicking a match, or Enter for the first, opens it with
+the match selected. A search stops at 10,000 matches.
+
+Replace All replaces every match listed, as the bar's does, opening each file
+as it goes, in one edit to undo per file, and leaves the files unsaved, for you
+to look over and save. Escape returns to the file tree.
 
 ## Language servers
 
@@ -198,18 +212,19 @@ Craft's own theme stands in for it.
 
 ## Source
 
-| File               | Contents                                                                                  |
-| ------------------ | ----------------------------------------------------------------------------------------- |
-| `src/main.rs`      | Application: startup, and routing folders and files                                       |
-| `src/window.rs`    | Project window: layout, tabs, actions, close prompts                                      |
-| `src/editor.rs`    | One open file: source view, loading and saving                                            |
-| `src/search.rs`    | Find and replace bar                                                                      |
-| `src/hover.rs`     | Hover: what is under the pointer, described                                               |
-| `src/recent.rs`    | Projects opened lately                                                                    |
-| `src/file_tree.rs` | Sidebar tree: loaded lazily, updated live                                                 |
-| `src/theme.rs`     | Theme: `theme.json`, read and resolved                                                    |
-| `src/theme.json`   | Craft's own theme                                                                         |
-| `src/style.css`    | Craft's style sheet                                                                       |
-| `src/lsp/`         | Language servers: environments, processes, files, hover, completion, highlighting, status |
-| `package.nix`      | Nix package                                                                               |
-| `flake.nix`        | Nix flake: package, development shell and formatter                                       |
+| File                    | Contents                                                                                  |
+| ----------------------- | ----------------------------------------------------------------------------------------- |
+| `src/main.rs`           | Application: startup, and routing folders and files                                       |
+| `src/window.rs`         | Project window: layout, tabs, actions, close prompts                                      |
+| `src/editor.rs`         | One open file: source view, loading and saving                                            |
+| `src/search.rs`         | Find and replace bar                                                                      |
+| `src/project_search.rs` | Finding and replacing across the project, on another thread                               |
+| `src/hover.rs`          | Hover: what is under the pointer, described                                               |
+| `src/recent.rs`         | Projects opened lately                                                                    |
+| `src/file_tree.rs`      | Sidebar tree: loaded lazily, updated live                                                 |
+| `src/theme.rs`          | Theme: `theme.json`, read and resolved                                                    |
+| `src/theme.json`        | Craft's own theme                                                                         |
+| `src/style.css`         | Craft's style sheet                                                                       |
+| `src/lsp/`              | Language servers: environments, processes, files, hover, completion, highlighting, status |
+| `package.nix`           | Nix package                                                                               |
+| `flake.nix`             | Nix flake: package, development shell and formatter                                       |

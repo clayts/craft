@@ -9,7 +9,7 @@ const ATTRIBUTES: &str =
     "standard::name,standard::display-name,standard::type,standard::fast-content-type";
 
 /// Version control metadata, never shown.
-const HIDDEN: [&str; 3] = [".git", ".hg", ".svn"];
+pub const HIDDEN: [&str; 3] = [".git", ".hg", ".svn"];
 
 /// A list view of the files under `root`, which calls `on_open` with each
 /// regular file the user clicks or otherwise activates.

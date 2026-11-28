@@ -209,21 +209,7 @@ impl Search {
         let controls = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         controls.append(&imp.count);
         controls.append(&imp.moves);
-        for (label, tooltip, setting) in [
-            ("Aa", "Match Case", "case-sensitive"),
-            ("<u>ab</u>", "Match Whole Words", "at-word-boundaries"),
-            (".*", "Regular Expressions", "regex-enabled"),
-        ] {
-            let option = gtk::ToggleButton::builder()
-                .child(&gtk::Label::builder().label(label).use_markup(true).build())
-                .tooltip_text(tooltip)
-                .css_classes(["flat"])
-                .build();
-            imp.settings
-                .bind_property(setting, &option, "active")
-                .bidirectional()
-                .sync_create()
-                .build();
+        for option in options(&imp.settings) {
             controls.append(&option);
         }
         imp.replacing.set_icon_name("edit-find-replace-symbolic");
@@ -447,6 +433,29 @@ fn shortcut(search: &Search, trigger: &str, method: fn(&Search)) -> gtk::Shortcu
     controller
 }
 
+/// Toggles for how `settings` finds: matching case, whole words, and
+/// regular expressions.
+pub fn options(settings: &sourceview::SearchSettings) -> [gtk::ToggleButton; 3] {
+    [
+        ("Aa", "Match Case", "case-sensitive"),
+        ("<u>ab</u>", "Match Whole Words", "at-word-boundaries"),
+        (".*", "Regular Expressions", "regex-enabled"),
+    ]
+    .map(|(label, tooltip, setting)| {
+        let option = gtk::ToggleButton::builder()
+            .child(&gtk::Label::builder().label(label).use_markup(true).build())
+            .tooltip_text(tooltip)
+            .css_classes(["flat"])
+            .build();
+        settings
+            .bind_property(setting, &option, "active")
+            .bidirectional()
+            .sync_create()
+            .build();
+        option
+    })
+}
+
 /// The bounds of the selection, or the cursor's position twice.
 fn selection(buffer: &sourceview::Buffer) -> (gtk::TextIter, gtk::TextIter) {
     buffer.selection_bounds().unwrap_or_else(|| {
@@ -476,7 +485,7 @@ fn select(editor: &Editor, start: &gtk::TextIter, end: &gtk::TextIter) {
 }
 
 /// Marks `widget` as holding what will not do, saying why, or as fine.
-fn show_error(widget: &impl IsA<gtk::Widget>, error: Option<&glib::Error>) {
+pub fn show_error(widget: &impl IsA<gtk::Widget>, error: Option<&glib::Error>) {
     if error.is_some() {
         widget.add_css_class("error");
     } else {

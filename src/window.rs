@@ -16,6 +16,7 @@ mod imp {
 
     use super::editor;
     use crate::editor::Editor;
+    use crate::project_search::ProjectSearch;
     use crate::search::Search;
     use crate::{lsp, recent};
 
@@ -24,7 +25,10 @@ mod imp {
         pub(super) project: RefCell<Option<gio::File>>,
         pub(super) toasts: adw::ToastOverlay,
         pub(super) split_view: adw::OverlaySplitView,
+        /// The file tree, or else finding in the project.
+        pub(super) sidebar_stack: gtk::Stack,
         pub(super) sidebar: gtk::ScrolledWindow,
+        pub(super) project_search: ProjectSearch,
         pub(super) sidebar_button: gtk::ToggleButton,
         pub(super) stack: gtk::Stack,
         pub(super) tabs: adw::TabView,
@@ -54,6 +58,9 @@ mod imp {
             klass.install_action("win.find-previous", None, |win, _, _| {
                 win.imp().search.find_previous();
             });
+            klass.install_action("win.find-in-project", None, |win, _, _| {
+                win.find_in_project();
+            });
             let ctrl = gdk::ModifierType::CONTROL_MASK;
             let shift = gdk::ModifierType::SHIFT_MASK;
             let none = gdk::ModifierType::empty();
@@ -66,6 +73,7 @@ mod imp {
             klass.add_binding_action(gdk::Key::h, ctrl, "win.replace");
             klass.add_binding_action(gdk::Key::g, ctrl, "win.find-next");
             klass.add_binding_action(gdk::Key::g, ctrl | shift, "win.find-previous");
+            klass.add_binding_action(gdk::Key::f, ctrl | shift, "win.find-in-project");
         }
     }
 
@@ -75,11 +83,6 @@ mod imp {
             let obj = self.obj();
             obj.set_title(Some("Craft"));
             obj.set_default_size(1000, 700);
-
-            self.sidebar.set_hscrollbar_policy(gtk::PolicyType::Never);
-            let sidebar = adw::ToolbarView::new();
-            sidebar.add_top_bar(&adw::HeaderBar::new());
-            sidebar.set_content(Some(&self.sidebar));
 
             self.sidebar_button.set_icon_name("sidebar-show-symbolic");
             self.sidebar_button.set_tooltip_text(Some("Toggle Sidebar"));
@@ -132,7 +135,7 @@ mod imp {
             content.add_top_bar(&self.search);
             content.set_content(Some(&self.stack));
 
-            self.split_view.set_sidebar(Some(&sidebar));
+            self.split_view.set_sidebar(Some(&self.sidebar()));
             self.split_view.set_content(Some(&content));
             self.toasts.set_child(Some(&self.split_view));
             obj.set_content(Some(&self.toasts));
@@ -184,6 +187,29 @@ mod imp {
 
         fn dispose(&self) {
             self.servers.shutdown();
+        }
+    }
+
+    impl Window {
+        /// The sidebar: the file tree, or finding in the project, which a
+        /// button in its header bar shows in its place.
+        fn sidebar(&self) -> adw::ToolbarView {
+            self.sidebar.set_hscrollbar_policy(gtk::PolicyType::Never);
+            self.sidebar_stack.add_named(&self.sidebar, Some("files"));
+            self.sidebar_stack
+                .add_named(&self.project_search, Some("search"));
+            self.project_search
+                .button()
+                .bind_property("active", &self.sidebar_stack, "visible-child-name")
+                .transform_to(|_, searching: bool| Some(if searching { "search" } else { "files" }))
+                .sync_create()
+                .build();
+            let header = adw::HeaderBar::new();
+            header.pack_end(self.project_search.button());
+            let sidebar = adw::ToolbarView::new();
+            sidebar.add_top_bar(&header);
+            sidebar.set_content(Some(&self.sidebar_stack));
+            sidebar
         }
     }
 
@@ -243,6 +269,7 @@ impl Window {
             ),
         );
         imp.sidebar.set_child(Some(&tree));
+        imp.project_search.set_root(root);
         imp.sidebar_button.set_visible(true);
         imp.split_view.set_show_sidebar(true);
         self.set_title(Some(&display_name(root)));
@@ -262,7 +289,7 @@ impl Window {
 
     /// Selects the tab editing `file`, reading the file into a new tab first
     /// if needed.
-    async fn open(win: &glib::WeakRef<Self>, file: gio::File) -> Option<Editor> {
+    pub async fn open(win: &glib::WeakRef<Self>, file: gio::File) -> Option<Editor> {
         if let Some(editor) = win.upgrade()?.select(&file) {
             return Some(editor);
         }
@@ -302,11 +329,11 @@ impl Window {
         Some(editor)
     }
 
-    fn current_editor(&self) -> Option<Editor> {
+    pub fn current_editor(&self) -> Option<Editor> {
         self.imp().tabs.selected_page().map(|page| editor(&page))
     }
 
-    fn editors(&self) -> impl Iterator<Item = Editor> + '_ {
+    pub fn editors(&self) -> impl Iterator<Item = Editor> + '_ {
         let tabs = &self.imp().tabs;
         (0..tabs.n_pages()).map(|i| editor(&tabs.nth_page(i)))
     }
@@ -390,6 +417,18 @@ impl Window {
         }
     }
 
+    /// Shows the sidebar's page for finding in the project, to find what is
+    /// selected, if it is on one line.
+    fn find_in_project(&self) {
+        let imp = self.imp();
+        imp.split_view.set_show_sidebar(true);
+        let selected = self.current_editor().and_then(|editor| {
+            let (start, end) = editor.buffer().selection_bounds()?;
+            (start.line() == end.line()).then(|| start.slice(&end))
+        });
+        imp.project_search.open(selected.as_deref());
+    }
+
     fn toggle_sidebar(&self) {
         let split_view = &self.imp().split_view;
         split_view.set_show_sidebar(!split_view.shows_sidebar());
@@ -445,6 +484,7 @@ impl Window {
             self.action_set_enabled(action, has_tabs);
         }
         self.action_set_enabled("win.toggle-sidebar", has_project);
+        self.action_set_enabled("win.find-in-project", has_project);
         imp.stack
             .set_visible_child_name(if has_tabs || has_project {
                 "tabs"

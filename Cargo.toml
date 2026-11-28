@@ -14,6 +14,7 @@ gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
 sourceview = { package = "sourceview5", version = "0.11", features = ["v5_12"] }
 futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+ignore = "0.4"
 lsp-types = "0.97"
 pulldown-cmark = { version = "0.13", default-features = false }
 serde = { version = "1.0", features = ["derive"] }

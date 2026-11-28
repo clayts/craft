@@ -251,9 +251,15 @@ impl Editor {
     /// Moves the cursor to `position`, which the language server gave in
     /// `encoding`, and scrolls it into view.
     pub fn goto(&self, position: lsp_types::Position, encoding: Encoding) {
+        let iter = encoding.iter_at(&self.imp().buffer, position);
+        self.reveal(&iter, &iter);
+    }
+
+    /// Selects from `start` to `end`, with the cursor at `start`, and scrolls
+    /// the cursor into view.
+    pub fn reveal(&self, start: &gtk::TextIter, end: &gtk::TextIter) {
         let imp = self.imp();
-        imp.buffer
-            .place_cursor(&encoding.iter_at(&imp.buffer, position));
+        imp.buffer.select_range(start, end);
         // GTK scrolls in an animation aimed where the cursor is as it
         // begins, which falls short while the lines above are still being
         // measured, as in a new tab. So the view first gets its size, then
