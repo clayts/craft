@@ -12,3 +12,9 @@ GtkSourceAssistant.hover-assistant {
   margin-bottom: 1px;
   box-shadow: 0 -2px 6px 3px alpha(black, 0.09), 0 0 0 1px alpha(black, 0.09);
 }
+
+/* The file tree's rows are closer together than a sidebar's usually are, as
+   there are more of them. */
+listview.navigation-sidebar > row {
+  min-height: 30px;
+}
