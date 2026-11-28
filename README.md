@@ -182,8 +182,9 @@ Craft's own theme stands in for it.
   read it, Craft asks before overwriting. Closing a tab or window with unsaved
   changes asks whether to save them.
 - **File tree:** sorts folders first, in natural order (`file2` before
-  `file10`), and hides `.git`, `.hg` and `.svn`. It updates as files change on
-  disk, and only reads a folder once you expand it.
+  `file10`), and hides `.git`, `.hg` and `.svn`. Each file shows its type's
+  icon, and a click opens it, or opens or closes a folder. It updates as files
+  change on disk, and only reads a folder once you expand it.
 - **Indentation:** Tab inserts four spaces, except in Go and Makefiles, which
   use tabs.
 - **Appearance:** follows the system's light or dark style.

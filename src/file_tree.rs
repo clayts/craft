@@ -5,13 +5,14 @@ use gtk::{gio, glib, pango};
 
 /// The file attributes the tree reads. `standard::name` is required for
 /// directory lists to resolve their children.
-const ATTRIBUTES: &str = "standard::name,standard::display-name,standard::type";
+const ATTRIBUTES: &str =
+    "standard::name,standard::display-name,standard::type,standard::fast-content-type";
 
 /// Version control metadata, never shown.
 const HIDDEN: [&str; 3] = [".git", ".hg", ".svn"];
 
 /// A list view of the files under `root`, which calls `on_open` with each
-/// regular file the user activates.
+/// regular file the user clicks or otherwise activates.
 pub fn new(root: &gio::File, on_open: impl Fn(gio::File) + 'static) -> gtk::ListView {
     let filter =
         gtk::CustomFilter::new(|item| !HIDDEN.contains(&info(item).display_name().as_str()));
@@ -35,11 +36,15 @@ pub fn new(root: &gio::File, on_open: impl Fn(gio::File) + 'static) -> gtk::List
 
     let factory = gtk::SignalListItemFactory::new();
     factory.connect_setup(|_, item| {
-        let label = gtk::Label::builder()
-            .xalign(0.0)
-            .ellipsize(pango::EllipsizeMode::End)
-            .build();
-        list_item(item).set_child(Some(&gtk::TreeExpander::builder().child(&label).build()));
+        let content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        content.append(&gtk::Image::new());
+        content.append(
+            &gtk::Label::builder()
+                .xalign(0.0)
+                .ellipsize(pango::EllipsizeMode::End)
+                .build(),
+        );
+        list_item(item).set_child(Some(&gtk::TreeExpander::builder().child(&content).build()));
     });
     factory.connect_bind(|_, item| {
         let item = list_item(item);
@@ -48,23 +53,27 @@ pub fn new(root: &gio::File, on_open: impl Fn(gio::File) + 'static) -> gtk::List
             .and_downcast::<gtk::TreeListRow>()
             .expect("tree items are rows");
         let expander = expander(item);
-        let label = expander
-            .child()
+        let content = expander.child().expect("expanders hold content");
+        let image = (content.first_child())
+            .and_downcast::<gtk::Image>()
+            .expect("content starts with an icon");
+        let label = (content.last_child())
             .and_downcast::<gtk::Label>()
-            .expect("expanders hold labels");
-        label.set_label(&info(&row.item().expect("rows hold items")).display_name());
+            .expect("content ends with a name");
+        let object = row.item().expect("rows hold items");
+        let info = info(&object);
+        image.set_from_gicon(&icon(info));
+        label.set_label(&info.display_name());
         expander.set_list_row(Some(&row));
     });
     factory.connect_unbind(|_, item| expander(list_item(item)).set_list_row(None));
 
+    // A click opens a file or a folder at once. Nothing is selected, as rows
+    // would otherwise be as the pointer passes over them.
     let view = gtk::ListView::builder()
-        .model(
-            &gtk::SingleSelection::builder()
-                .model(&tree)
-                .autoselect(false)
-                .build(),
-        )
+        .model(&gtk::NoSelection::new(Some(tree.clone())))
         .factory(&factory)
+        .single_click_activate(true)
         .css_classes(["navigation-sidebar"])
         .build();
     view.connect_activate(move |_, position| {
@@ -110,6 +119,25 @@ fn info_expression<T: glib::value::ValueType>(
     gtk::ClosureExpression::with_callback(gtk::Expression::NONE, move |values| {
         f(&values[0].get().expect("expressions apply to file infos"))
     })
+}
+
+/// The symbolic icon for the type of file `info` describes, by its name, or
+/// else a text file's, which code most often is.
+fn icon(info: &gio::FileInfo) -> gio::ThemedIcon {
+    let kind = info
+        .attribute_string(gio::FILE_ATTRIBUTE_STANDARD_FAST_CONTENT_TYPE)
+        .unwrap_or_default();
+    // Leaving out the full-colour names GIO gives as later choices.
+    let names = gio::content_type_get_symbolic_icon(&kind)
+        .downcast::<gio::ThemedIcon>()
+        .map(|icon| icon.names())
+        .unwrap_or_default();
+    let mut names: Vec<&str> = (names.iter())
+        .map(glib::GString::as_str)
+        .filter(|name| name.ends_with("-symbolic"))
+        .collect();
+    names.push("text-x-generic-symbolic");
+    gio::ThemedIcon::from_names(&names)
 }
 
 fn info(item: &glib::Object) -> &gio::FileInfo {
